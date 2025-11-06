@@ -9,6 +9,7 @@ import logging
 import os
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Conflict
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -20,6 +21,8 @@ from telegram.ext import (
 from dotenv import load_dotenv
 from openai import OpenAI
 import sqlite3
+import time
+import sys
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -795,6 +798,7 @@ def main():
         logger.error("TELEGRAM_BOT_TOKEN не установлен в переменных окружения!")
         return
     
+    # Создаем приложение
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
@@ -802,17 +806,48 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    # Задержка перед запуском для предотвращения конфликтов при одновременном старте нескольких инстансов
+    time.sleep(2)
+    
     logger.info("Бот запущен!")
-    try:
-        # run_polling автоматически удаляет webhook и использует drop_pending_updates
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,  # Пропускаем старые обновления
-            close_loop=False
-        )
-    except Exception as e:
-        logger.error(f"Ошибка при запуске бота: {e}")
-        raise
+    
+    # Попытки запуска с обработкой ошибки Conflict
+    max_retries = 3
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            # Удаляем webhook перед polling (асинхронно через run_polling)
+            logger.info(f"Попытка запуска {attempt + 1}/{max_retries}...")
+            
+            # run_polling автоматически удаляет webhook и использует drop_pending_updates
+            application.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,  # Пропускаем старые обновления
+                close_loop=False
+            )
+            # Если дошли сюда, значит бот остановлен нормально
+            break
+            
+        except Conflict as e:
+            logger.error(f"Конфликт обнаружен: {e}")
+            if attempt < max_retries - 1:
+                wait_time = retry_delay * (attempt + 1)
+                logger.warning(f"Ожидание {wait_time} секунд перед повторной попыткой...")
+                time.sleep(wait_time)
+                logger.info("Повторная попытка запуска...")
+            else:
+                logger.error("Достигнуто максимальное количество попыток. Возможно, другой инстанс бота уже запущен.")
+                logger.error("Убедитесь, что запущен только один экземпляр бота на платформе.")
+                sys.exit(1)
+                
+        except KeyboardInterrupt:
+            logger.info("Бот остановлен пользователем")
+            break
+            
+        except Exception as e:
+            logger.error(f"Критическая ошибка при запуске бота: {e}")
+            raise
 
 
 if __name__ == '__main__':
