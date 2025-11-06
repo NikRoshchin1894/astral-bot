@@ -802,8 +802,24 @@ def main():
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     
+    # Удаляем старый webhook перед запуском polling (для облачных платформ)
+    try:
+        logger.info("Удаление старого webhook...")
+        application.bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Старый webhook удален")
+    except Exception as e:
+        logger.warning(f"Ошибка при удалении webhook (может быть нормально): {e}")
+    
     logger.info("Бот запущен!")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    try:
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True,  # Пропускаем старые обновления
+            close_loop=False
+        )
+    except Exception as e:
+        logger.error(f"Ошибка при запуске бота: {e}")
+        raise
 
 
 if __name__ == '__main__':
