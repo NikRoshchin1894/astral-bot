@@ -1,0 +1,18 @@
+[Unit]
+Description=Astral Bot Telegram Service
+After=network.target
+
+[Service]
+Type=simple
+User=astralbot
+WorkingDirectory=/home/astralbot/Astral_Bot
+Environment="PATH=/home/astralbot/Astral_Bot/venv/bin"
+ExecStart=/home/astralbot/Astral_Bot/venv/bin/python3 /home/astralbot/Astral_Bot/bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/astralbot/Astral_Bot/logs/bot.log
+StandardError=append:/home/astralbot/Astral_Bot/logs/bot_error.log
+
+[Install]
+WantedBy=multi-user.target
+
