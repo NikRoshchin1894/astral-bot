@@ -27,6 +27,7 @@ from openai import OpenAI
 import sqlite3
 import sys
 from fpdf import FPDF
+import requests
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -522,11 +523,17 @@ def validate_place(place_str):
     return True, None
 
 
+FONTS_DIR = os.path.join(os.path.dirname(__file__), 'fonts')
 FONT_CANDIDATES = [
-    os.path.join(os.path.dirname(__file__), 'fonts', 'DejaVuSans.ttf'),
+    os.path.join(FONTS_DIR, 'DejaVuSans.ttf'),
+    os.path.join(FONTS_DIR, 'NotoSans-Regular.ttf'),
     '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
     '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
     '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+]
+FONT_DOWNLOAD_CANDIDATES = [
+    ('DejaVuSans.ttf', 'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf'),
+    ('NotoSans-Regular.ttf', 'https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans-Regular.ttf'),
 ]
 
 
@@ -580,6 +587,28 @@ def _find_font_path() -> Optional[str]:
     for candidate in FONT_CANDIDATES:
         if os.path.exists(candidate):
             return candidate
+
+    os.makedirs(FONTS_DIR, exist_ok=True)
+
+    for filename, _ in FONT_DOWNLOAD_CANDIDATES:
+        local_path = os.path.join(FONTS_DIR, filename)
+        if os.path.exists(local_path):
+            return local_path
+
+    for filename, url in FONT_DOWNLOAD_CANDIDATES:
+        local_path = os.path.join(FONTS_DIR, filename)
+        try:
+            logger.info(f"Загрузка шрифта для PDF: {filename} из {url}")
+            response = requests.get(url, timeout=20)
+            if response.status_code == 200 and response.content:
+                with open(local_path, 'wb') as font_file:
+                    font_file.write(response.content)
+                logger.info(f"Шрифт {filename} успешно загружен в {local_path}")
+                return local_path
+            logger.warning(f"Не удалось загрузить шрифт {filename}: статус {response.status_code}")
+        except Exception as download_error:
+            logger.warning(f"Ошибка при загрузке шрифта {filename}: {download_error}")
+
     return None
 
 
@@ -604,13 +633,18 @@ def generate_pdf_from_text(natal_chart_text: str, birth_data: dict) -> Optional[
                     f"Не удалось загрузить шрифт {font_path}: {font_error}. Используем стандартный Helvetica без Unicode."
                 )
 
+        title = birth_data.get('name', 'Пользователь')
+
         if not use_unicode_font:
             logger.warning("Используется базовый шрифт без поддержки Unicode. Кириллица будет удалена из PDF.")
             plain_text = plain_text.encode('latin-1', 'ignore').decode('latin-1')
+            title = title.encode('latin-1', 'ignore').decode('latin-1') or 'Natalnaya karta'
+            header_text = "Natalnaya karta"
             pdf.set_font('Helvetica', size=12)
+        else:
+            header_text = "Натальная карта"
 
-        title = birth_data.get('name', 'Пользователь')
-        pdf.cell(0, 10, f"Натальная карта: {title}", ln=True, align='C')
+        pdf.cell(0, 10, f"{header_text}: {title}", ln=True, align='C')
         pdf.ln(5)
 
         for line in plain_text.split('\n'):
