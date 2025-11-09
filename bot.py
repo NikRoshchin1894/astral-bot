@@ -351,72 +351,72 @@ async def handle_natal_chart_request(query, context):
     
     try:
         natal_chart = generate_natal_chart_with_gpt(birth_data, openai_key)
-        
-        # Разбиваем сообщение на части, если оно слишком длинное (лимит Telegram - 4096 символов)
-        max_length = 4000  # Оставляем запас для форматирования
-        
-        async def send_message_safe(text, is_edit=False):
-            """Безопасная отправка сообщения с обработкой ошибок парсинга"""
-            try:
-                if is_edit:
-                    await query.edit_message_text(text, parse_mode='Markdown')
-                else:
-                    await query.message.reply_text(text, parse_mode='Markdown')
-            except Exception as e:
-                # Если ошибка парсинга, очищаем Markdown и отправляем снова
-                logger.warning(f"Ошибка парсинга Markdown: {e}, очищаем и отправляем без форматирования")
-                cleaned_text = clean_markdown(text)
+        pdf_path = generate_pdf_from_text(natal_chart, birth_data)
+
+        async def send_text_version(text):
+            """Отправка текстовой версии натальной карты (fallback)"""
+            max_length = 4000  # Лимит Telegram - 4096 символов, оставляем запас
+
+            async def send_message_safe(message_text, is_edit=False):
+                """Безопасная отправка сообщения с обработкой ошибок парсинга"""
                 try:
                     if is_edit:
-                        await query.edit_message_text(cleaned_text, parse_mode='Markdown')
+                        await query.edit_message_text(message_text, parse_mode='Markdown')
                     else:
-                        await query.message.reply_text(cleaned_text, parse_mode='Markdown')
-                except Exception as e2:
-                    # Если все еще ошибка, отправляем как обычный текст без форматирования
-                    logger.warning(f"Все еще ошибка после очистки: {e2}, отправляем без форматирования")
-                    # Убираем все markdown символы
-                    plain_text = text.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
-                    if is_edit:
-                        await query.edit_message_text(plain_text)
-                    else:
-                        await query.message.reply_text(plain_text)
-        
-        if len(natal_chart) <= max_length:
-            await send_message_safe(natal_chart, is_edit=True)
-        else:
-            # Отправляем первую часть через edit_message_text
-            first_part = natal_chart[:max_length]
-            # Находим последний перенос строки, чтобы не разрывать предложения
-            last_newline = first_part.rfind('\n')
-            if last_newline > max_length * 0.8:  # Если есть разумный перенос строки
-                first_part = natal_chart[:last_newline]
-                remaining = natal_chart[last_newline+1:]
+                        await query.message.reply_text(message_text, parse_mode='Markdown')
+                except Exception as parse_error:
+                    logger.warning(f"Ошибка парсинга Markdown: {parse_error}, очищаем и отправляем без форматирования")
+                    cleaned_text = clean_markdown(message_text)
+                    try:
+                        if is_edit:
+                            await query.edit_message_text(cleaned_text, parse_mode='Markdown')
+                        else:
+                            await query.message.reply_text(cleaned_text, parse_mode='Markdown')
+                    except Exception as second_error:
+                        logger.warning(f"Ошибка после очистки: {second_error}, отправляем без форматирования")
+                        plain_text = message_text.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+                        if is_edit:
+                            await query.edit_message_text(plain_text)
+                        else:
+                            await query.message.reply_text(plain_text)
+
+            if len(text) <= max_length:
+                await send_message_safe(text, is_edit=True)
             else:
-                remaining = natal_chart[max_length:]
-            
-            await send_message_safe(first_part, is_edit=True)
-            
-            # Отправляем оставшиеся части отдельными сообщениями
-            while remaining:
-                if len(remaining) <= max_length:
-                    await send_message_safe(remaining, is_edit=False)
-                    break
+                first_part = text[:max_length]
+                last_newline = first_part.rfind('\n')
+                if last_newline > max_length * 0.8:
+                    first_part = text[:last_newline]
+                    remaining = text[last_newline + 1:]
                 else:
-                    # Находим разумное место для разрыва
+                    remaining = text[max_length:]
+
+                await send_message_safe(first_part, is_edit=True)
+
+                while remaining:
+                    if len(remaining) <= max_length:
+                        await send_message_safe(remaining, is_edit=False)
+                        break
                     chunk = remaining[:max_length]
                     last_newline = chunk.rfind('\n')
                     if last_newline > max_length * 0.8:
                         chunk = remaining[:last_newline]
-                        remaining = remaining[last_newline+1:]
+                        remaining = remaining[last_newline + 1:]
                     else:
                         remaining = remaining[max_length:]
-                    
+
                     await send_message_safe(chunk, is_edit=False)
-        
-        pdf_path = generate_pdf_from_text(natal_chart, birth_data)
+
         if pdf_path:
             try:
-                safe_name = ''.join(ch for ch in birth_data.get('name', 'user') if ch.isalnum() or ch in ('_', '-', ' '))
+                await query.edit_message_text(
+                    "📄 *Натальная карта готова!*\n\nПолный отчет в PDF во вложении.",
+                    parse_mode='Markdown'
+                )
+
+                safe_name = ''.join(
+                    ch for ch in birth_data.get('name', 'user') if ch.isalnum() or ch in ('_', '-', ' ')
+                )
                 if not safe_name:
                     safe_name = 'user'
                 filename = f"natal_chart_{safe_name.replace(' ', '_')}.pdf"
@@ -429,11 +429,16 @@ async def handle_natal_chart_request(query, context):
                     )
             except Exception as pdf_error:
                 logger.error(f"Ошибка при отправке PDF: {pdf_error}")
+                await send_text_version("⚠️ Не удалось отправить PDF. Отправляю текстовую версию.\n\n" + natal_chart)
             finally:
-                try:
-                    os.remove(pdf_path)
-                except OSError as remove_error:
-                    logger.warning(f"Не удалось удалить временный PDF-файл: {remove_error}")
+                if pdf_path and os.path.exists(pdf_path):
+                    try:
+                        os.remove(pdf_path)
+                    except OSError as remove_error:
+                        logger.warning(f"Не удалось удалить временный PDF-файл: {remove_error}")
+        else:
+            logger.warning("Не удалось сформировать PDF. Отправляем текстовую версию натальной карты.")
+            await send_text_version("⚠️ Не удалось сформировать PDF. Отправляю текстовую версию.\n\n" + natal_chart)
         
         buttons = InlineKeyboardMarkup([[
             InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
