@@ -7,7 +7,11 @@ Astral Bot - Astrology Telegram Bot
 
 import logging
 import os
+import tempfile
+import time
+import uuid
 from datetime import datetime
+from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import Conflict
 from telegram.ext import (
@@ -21,8 +25,8 @@ from telegram.ext import (
 from dotenv import load_dotenv
 from openai import OpenAI
 import sqlite3
-import time
 import sys
+from fpdf import FPDF
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -409,6 +413,28 @@ async def handle_natal_chart_request(query, context):
                     
                     await send_message_safe(chunk, is_edit=False)
         
+        pdf_path = generate_pdf_from_text(natal_chart, birth_data)
+        if pdf_path:
+            try:
+                safe_name = ''.join(ch for ch in birth_data.get('name', 'user') if ch.isalnum() or ch in ('_', '-', ' '))
+                if not safe_name:
+                    safe_name = 'user'
+                filename = f"natal_chart_{safe_name.replace(' ', '_')}.pdf"
+                caption = "📄 Натальная карта в формате PDF"
+                with open(pdf_path, 'rb') as pdf_file:
+                    await query.message.reply_document(
+                        document=pdf_file,
+                        filename=filename,
+                        caption=caption
+                    )
+            except Exception as pdf_error:
+                logger.error(f"Ошибка при отправке PDF: {pdf_error}")
+            finally:
+                try:
+                    os.remove(pdf_path)
+                except OSError as remove_error:
+                    logger.warning(f"Не удалось удалить временный PDF-файл: {remove_error}")
+        
         buttons = InlineKeyboardMarkup([[
             InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
         ]])
@@ -491,6 +517,14 @@ def validate_place(place_str):
     return True, None
 
 
+FONT_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), 'fonts', 'DejaVuSans.ttf'),
+    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+    '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
+]
+
+
 def clean_markdown(text):
     """Очистка и исправление Markdown для Telegram"""
     import re
@@ -520,6 +554,70 @@ def clean_markdown(text):
     text = '\n'.join(cleaned_lines)
     
     return text
+
+
+def _strip_markdown(text: str) -> str:
+    """Простое удаление Markdown-символов для формирования PDF"""
+    replacements = {
+        '**': '',
+        '*': '',
+        '_': '',
+        '`': '',
+    }
+    cleaned = text
+    for old, new in replacements.items():
+        cleaned = cleaned.replace(old, new)
+    return cleaned
+
+
+def _find_font_path() -> Optional[str]:
+    """Поиск доступного шрифта с поддержкой кириллицы"""
+    for candidate in FONT_CANDIDATES:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def generate_pdf_from_text(natal_chart_text: str, birth_data: dict) -> Optional[str]:
+    """Генерация PDF-файла с натальной картой и возврат пути к файлу"""
+    try:
+        plain_text = _strip_markdown(natal_chart_text)
+        font_path = _find_font_path()
+        
+        pdf = FPDF()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_page()
+        
+        if font_path:
+            try:
+                pdf.add_font('CustomFont', '', font_path, uni=True)
+                pdf.set_font('CustomFont', size=12)
+            except Exception as font_error:
+                logger.warning(f"Не удалось загрузить шрифт {font_path}: {font_error}. Используем стандартный Arial.")
+                pdf.set_font('Arial', size=12)
+        else:
+            logger.warning("Не найден подходящий шрифт для кириллицы. Текст может отображаться некорректно в PDF.")
+            pdf.set_font('Arial', size=12)
+            # Удаляем символы, которые не поддерживаются стандартными шрифтами
+            plain_text = plain_text.encode('latin-1', 'ignore').decode('latin-1')
+        
+        # Заголовок
+        title = birth_data.get('name', 'Пользователь')
+        pdf.cell(0, 10, f"Натальная карта: {title}", ln=True, align='C')
+        pdf.ln(5)
+        
+        # Основной текст
+        for line in plain_text.split('\n'):
+            pdf.multi_cell(0, 8, line if line.strip() else '')
+        
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
+        pdf.output(temp_file.name)
+        temp_file.close()
+        
+        return temp_file.name
+    except Exception as e:
+        logger.error(f"Ошибка при генерации PDF: {e}")
+        return None
 
 
 async def natal_chart_start(query, context):
