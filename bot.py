@@ -588,40 +588,41 @@ def generate_pdf_from_text(natal_chart_text: str, birth_data: dict) -> Optional[
     try:
         plain_text = _strip_markdown(natal_chart_text)
         font_path = _find_font_path()
-        
+
         pdf = FPDF()
         pdf.set_auto_page_break(auto=True, margin=15)
         pdf.add_page()
-        
+
+        use_unicode_font = False
         if font_path:
             try:
                 pdf.add_font('CustomFont', '', font_path, uni=True)
                 pdf.set_font('CustomFont', size=12)
+                use_unicode_font = True
             except Exception as font_error:
-                logger.warning(f"Не удалось загрузить шрифт {font_path}: {font_error}. Используем стандартный Arial.")
-                pdf.set_font('Arial', size=12)
-        else:
-            logger.warning("Не найден подходящий шрифт для кириллицы. Текст может отображаться некорректно в PDF.")
-            pdf.set_font('Arial', size=12)
-            # Удаляем символы, которые не поддерживаются стандартными шрифтами
+                logger.warning(
+                    f"Не удалось загрузить шрифт {font_path}: {font_error}. Используем стандартный Helvetica без Unicode."
+                )
+
+        if not use_unicode_font:
+            logger.warning("Используется базовый шрифт без поддержки Unicode. Кириллица будет удалена из PDF.")
             plain_text = plain_text.encode('latin-1', 'ignore').decode('latin-1')
-        
-        # Заголовок
+            pdf.set_font('Helvetica', size=12)
+
         title = birth_data.get('name', 'Пользователь')
         pdf.cell(0, 10, f"Натальная карта: {title}", ln=True, align='C')
         pdf.ln(5)
-        
-        # Основной текст
+
         for line in plain_text.split('\n'):
             pdf.multi_cell(0, 8, line if line.strip() else '')
-        
-        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.pdf')
-        pdf.output(temp_file.name)
-        temp_file.close()
-        
-        return temp_file.name
+
+        fd, temp_path = tempfile.mkstemp(suffix='.pdf')
+        os.close(fd)
+        pdf.output(temp_path)
+
+        return temp_path
     except Exception as e:
-        logger.error(f"Ошибка при генерации PDF: {e}")
+        logger.error(f"Ошибка при генерации PDF: {e}", exc_info=True)
         return None
 
 
