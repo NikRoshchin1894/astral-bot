@@ -233,44 +233,44 @@ def init_db():
         else:
             # SQLite схемы
             cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                first_name TEXT,
-                last_name TEXT,
-                country TEXT,
-                city TEXT,
-                birth_date TEXT,
-                birth_time TEXT,
-                updated_at TEXT,
-                has_paid INTEGER DEFAULT 0
-            )
-        ''')
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id INTEGER PRIMARY KEY,
+                    first_name TEXT,
+                    last_name TEXT,
+                    country TEXT,
+                    city TEXT,
+                    birth_date TEXT,
+                    birth_time TEXT,
+                    updated_at TEXT,
+                    has_paid INTEGER DEFAULT 0
+                )
+            ''')
+            
+            try:
+                cursor.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute('ALTER TABLE users ADD COLUMN birth_place TEXT')
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            
+            # Таблица для аналитики событий
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER,
+                    event_type TEXT NOT NULL,
+                    event_data TEXT,
+                    timestamp TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
         
-        try:
-            cursor.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
-        
-        try:
-            cursor.execute('ALTER TABLE users ADD COLUMN birth_place TEXT')
-            conn.commit()
-        except sqlite3.OperationalError:
-            pass
-        
-        # Таблица для аналитики событий
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                event_type TEXT NOT NULL,
-                event_data TEXT,
-                timestamp TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-        ''')
-    
-    # Индексы (одинаковые для обеих БД)
+        # Индексы (одинаковые для обеих БД)
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
