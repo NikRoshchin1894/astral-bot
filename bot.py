@@ -65,6 +65,12 @@ logger = logging.getLogger(__name__)
 DATABASE_URL = os.getenv('DATABASE_URL')
 DATABASE = 'users.db'  # Для SQLite локально
 
+# Логируем состояние DATABASE_URL при запуске
+if DATABASE_URL:
+    logger.info(f"✅ DATABASE_URL найдена (первые 20 символов: {DATABASE_URL[:20]}...)")
+else:
+    logger.warning("⚠️ DATABASE_URL не найдена в переменных окружения! Используется SQLite.")
+
 def get_db_connection():
     """Получает соединение с базой данных (PostgreSQL или SQLite)"""
     if DATABASE_URL:
