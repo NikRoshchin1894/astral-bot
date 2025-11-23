@@ -41,6 +41,9 @@ import random
 import sqlite3
 import sys
 import swisseph as swe
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from urllib.parse import urlparse
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from datetime import datetime, timezone
@@ -51,7 +54,31 @@ from timezonefinder import TimezoneFinder
 load_dotenv()
 
 # База данных
-DATABASE = 'users.db'
+# Используем PostgreSQL на Railway, SQLite локально
+DATABASE_URL = os.getenv('DATABASE_URL')
+DATABASE = 'users.db'  # Для SQLite локально
+
+def get_db_connection():
+    """Получает соединение с базой данных (PostgreSQL или SQLite)"""
+    if DATABASE_URL:
+        # Используем PostgreSQL на Railway
+        # Railway предоставляет DATABASE_URL в формате: postgresql://user:password@host:port/dbname
+        try:
+            result = urlparse(DATABASE_URL)
+            conn = psycopg2.connect(
+                database=result.path[1:],  # Убираем первый слэш
+                user=result.username,
+                password=result.password,
+                host=result.hostname,
+                port=result.port
+            )
+            return conn, 'postgresql'
+        except Exception as e:
+            logger.error(f"Ошибка подключения к PostgreSQL: {e}, используем SQLite")
+            return sqlite3.connect(DATABASE), 'sqlite'
+    else:
+        # Используем SQLite локально
+        return sqlite3.connect(DATABASE), 'sqlite'
 
 # Настройка логирования
 logging.basicConfig(
@@ -144,50 +171,107 @@ def _split_example_by_sections(example_text: str) -> dict:
 
 def init_db():
     """Инициализация базы данных"""
-    conn = sqlite3.connect(DATABASE)
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            first_name TEXT,
-            last_name TEXT,
-            country TEXT,
-            city TEXT,
-            birth_date TEXT,
-            birth_time TEXT,
-            updated_at TEXT,
-            has_paid INTEGER DEFAULT 0
-        )
-    ''')
-    try:
-        conn.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
     
-    # Таблица для аналитики событий
-    conn.execute('''
-        CREATE TABLE IF NOT EXISTS events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            event_type TEXT NOT NULL,
-            event_data TEXT,
-            timestamp TEXT NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    ''')
-    # Индекс для быстрого поиска по user_id и event_type
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)')
-    conn.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
+    if db_type == 'postgresql':
+        # PostgreSQL схемы
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                first_name TEXT,
+                last_name TEXT,
+                country TEXT,
+                city TEXT,
+                birth_date TEXT,
+                birth_time TEXT,
+                updated_at TEXT,
+                has_paid INTEGER DEFAULT 0,
+                birth_place TEXT
+            )
+        ''')
+        
+        # Проверяем и добавляем birth_place если его нет
+        try:
+            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='birth_place'")
+            if not cursor.fetchone():
+                cursor.execute('ALTER TABLE users ADD COLUMN birth_place TEXT')
+        except Exception as e:
+            logger.warning(f"Ошибка при проверке столбца birth_place: {e}")
+        
+        # Проверяем и добавляем has_paid если его нет
+        try:
+            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='has_paid'")
+            if not cursor.fetchone():
+                cursor.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
+        except Exception as e:
+            logger.warning(f"Ошибка при проверке столбца has_paid: {e}")
+        
+        # Таблица для аналитики событий
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS events (
+                id SERIAL PRIMARY KEY,
+                user_id BIGINT,
+                event_type TEXT NOT NULL,
+                event_data TEXT,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+    else:
+        # SQLite схемы
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                first_name TEXT,
+                last_name TEXT,
+                country TEXT,
+                city TEXT,
+                birth_date TEXT,
+                birth_time TEXT,
+                updated_at TEXT,
+                has_paid INTEGER DEFAULT 0
+            )
+        ''')
+        
+        try:
+            cursor.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        
+        try:
+            cursor.execute('ALTER TABLE users ADD COLUMN birth_place TEXT')
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass
+        
+        # Таблица для аналитики событий
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                event_type TEXT NOT NULL,
+                event_data TEXT,
+                timestamp TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+        ''')
+    
+    # Индексы (одинаковые для обеих БД)
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
     
     conn.commit()
     conn.close()
-    print("База данных инициализирована")
+    logger.info(f"База данных инициализирована ({db_type})")
 
 
 def save_user_profile(user_id, user_data):
     """Сохранение профиля пользователя в базу данных"""
-    conn = sqlite3.connect(DATABASE)
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
 
     birth_place = user_data.get('birth_place', '')
     if ',' in birth_place:
@@ -198,31 +282,63 @@ def save_user_profile(user_id, user_data):
         city = birth_place
         country = ''
 
-    cursor = conn.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
+    # Получаем текущий статус оплаты
+    if db_type == 'postgresql':
+        cursor.execute('SELECT has_paid FROM users WHERE user_id = %s', (user_id,))
+    else:
+        cursor.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     has_paid = row[0] if row else 0
 
-    conn.execute('''
-        INSERT INTO users 
-        (user_id, first_name, country, city, birth_date, birth_time, has_paid, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            first_name = excluded.first_name,
-            country = excluded.country,
-            city = excluded.city,
-            birth_date = excluded.birth_date,
-            birth_time = excluded.birth_time,
-            updated_at = excluded.updated_at
-    ''', (
-        user_id,
-        user_data.get('birth_name', ''),
-        country,
-        city,
-        user_data.get('birth_date', ''),
-        user_data.get('birth_time', ''),
-        has_paid,
-        datetime.now().isoformat()
-    ))
+    # Сохраняем профиль
+    if db_type == 'postgresql':
+        cursor.execute('''
+            INSERT INTO users 
+            (user_id, first_name, country, city, birth_date, birth_time, birth_place, has_paid, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT(user_id) DO UPDATE SET
+                first_name = EXCLUDED.first_name,
+                country = EXCLUDED.country,
+                city = EXCLUDED.city,
+                birth_date = EXCLUDED.birth_date,
+                birth_time = EXCLUDED.birth_time,
+                birth_place = EXCLUDED.birth_place,
+                updated_at = EXCLUDED.updated_at
+        ''', (
+            user_id,
+            user_data.get('birth_name', ''),
+            country,
+            city,
+            user_data.get('birth_date', ''),
+            user_data.get('birth_time', ''),
+            birth_place,
+            has_paid,
+            datetime.now().isoformat()
+        ))
+    else:
+        cursor.execute('''
+            INSERT INTO users 
+            (user_id, first_name, country, city, birth_date, birth_time, birth_place, has_paid, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                first_name = excluded.first_name,
+                country = excluded.country,
+                city = excluded.city,
+                birth_date = excluded.birth_date,
+                birth_time = excluded.birth_time,
+                birth_place = excluded.birth_place,
+                updated_at = excluded.updated_at
+        ''', (
+            user_id,
+            user_data.get('birth_name', ''),
+            country,
+            city,
+            user_data.get('birth_date', ''),
+            user_data.get('birth_time', ''),
+            birth_place,
+            has_paid,
+            datetime.now().isoformat()
+        ))
     conn.commit()
     conn.close()
     
@@ -238,28 +354,44 @@ def save_user_profile(user_id, user_data):
 
 def load_user_profile(user_id):
     """Загрузка профиля пользователя из базы данных"""
-    conn = sqlite3.connect(DATABASE)
+    conn, db_type = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
+    
+    if db_type == 'postgresql':
+        cursor.execute('SELECT * FROM users WHERE user_id = %s', (user_id,))
+        row = cursor.fetchone()
+        if row:
+            columns = [desc[0] for desc in cursor.description]
+            result = dict(zip(columns, row))
+        else:
+            result = None
+    else:
+        cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
+        if row:
+            columns = ['user_id', 'first_name', 'last_name', 'country', 'city', 
+                       'birth_date', 'birth_time', 'updated_at', 'has_paid', 'birth_place']
+            result = dict(zip(columns, row))
+        else:
+            result = None
+    
     conn.close()
     
-    if row:
-        columns = ['user_id', 'first_name', 'last_name', 'country', 'city', 
-                   'birth_date', 'birth_time', 'updated_at', 'has_paid']
-        result = dict(zip(columns, row))
-        
+    if result:
         user_data = {}
-        if result['first_name']:
+        if result.get('first_name'):
             user_data['birth_name'] = result['first_name']
-        if result['birth_date']:
+        if result.get('birth_date'):
             user_data['birth_date'] = result['birth_date']
-        if result['birth_time']:
+        if result.get('birth_time'):
             user_data['birth_time'] = result['birth_time']
         
-        if result['city'] and result['country']:
+        # Используем birth_place если есть, иначе собираем из city и country
+        if result.get('birth_place'):
+            user_data['birth_place'] = result['birth_place']
+        elif result.get('city') and result.get('country'):
             user_data['birth_place'] = f"{result['city']}, {result['country']}"
-        elif result['city']:
+        elif result.get('city'):
             user_data['birth_place'] = result['city']
         
         if result.get('has_paid'):
@@ -278,17 +410,30 @@ def log_event(user_id: int, event_type: str, event_data: Optional[dict] = None):
         event_data: Дополнительные данные события в формате словаря (будут сохранены как JSON)
     """
     try:
-        conn = sqlite3.connect(DATABASE)
+        conn, db_type = get_db_connection()
+        cursor = conn.cursor()
         data_json = json.dumps(event_data, ensure_ascii=False) if event_data else None
-        conn.execute('''
-            INSERT INTO events (user_id, event_type, event_data, timestamp)
-            VALUES (?, ?, ?, ?)
-        ''', (
-            user_id,
-            event_type,
-            data_json,
-            datetime.now().isoformat()
-        ))
+        
+        if db_type == 'postgresql':
+            cursor.execute('''
+                INSERT INTO events (user_id, event_type, event_data, timestamp)
+                VALUES (%s, %s, %s, %s)
+            ''', (
+                user_id,
+                event_type,
+                data_json,
+                datetime.now().isoformat()
+            ))
+        else:
+            cursor.execute('''
+                INSERT INTO events (user_id, event_type, event_data, timestamp)
+                VALUES (?, ?, ?, ?)
+            ''', (
+                user_id,
+                event_type,
+                data_json,
+                datetime.now().isoformat()
+            ))
         conn.commit()
         conn.close()
         logger.info(f"Event logged: {event_type} for user {user_id}")
@@ -297,38 +442,65 @@ def log_event(user_id: int, event_type: str, event_data: Optional[dict] = None):
 
 
 def user_has_paid(user_id: int) -> bool:
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    
+    if db_type == 'postgresql':
+        cursor.execute('SELECT has_paid FROM users WHERE user_id = %s', (user_id,))
+    else:
+        cursor.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
     return bool(row[0]) if row else False
 
 
 def mark_user_paid(user_id: int):
-    conn = sqlite3.connect(DATABASE)
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
     now = datetime.now().isoformat()
-    conn.execute('''
-        INSERT INTO users (user_id, has_paid, updated_at)
-        VALUES (?, 1, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            has_paid = 1,
-            updated_at = excluded.updated_at
-    ''', (user_id, now))
+    
+    if db_type == 'postgresql':
+        cursor.execute('''
+            INSERT INTO users (user_id, has_paid, updated_at)
+            VALUES (%s, 1, %s)
+            ON CONFLICT(user_id) DO UPDATE SET
+                has_paid = 1,
+                updated_at = EXCLUDED.updated_at
+        ''', (user_id, now))
+    else:
+        cursor.execute('''
+            INSERT INTO users (user_id, has_paid, updated_at)
+            VALUES (?, 1, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                has_paid = 1,
+                updated_at = excluded.updated_at
+        ''', (user_id, now))
     conn.commit()
     conn.close()
 
 
 def reset_user_payment(user_id: int):
     """Сбрасывает статус оплаты после выдачи натальной карты."""
-    conn = sqlite3.connect(DATABASE)
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
     now = datetime.now().isoformat()
-    conn.execute('''
-        INSERT INTO users (user_id, has_paid, updated_at)
-        VALUES (?, 0, ?)
-        ON CONFLICT(user_id) DO UPDATE SET
-            has_paid = 0,
-            updated_at = excluded.updated_at
-    ''', (user_id, now))
+    
+    if db_type == 'postgresql':
+        cursor.execute('''
+            INSERT INTO users (user_id, has_paid, updated_at)
+            VALUES (%s, 0, %s)
+            ON CONFLICT(user_id) DO UPDATE SET
+                has_paid = 0,
+                updated_at = EXCLUDED.updated_at
+        ''', (user_id, now))
+    else:
+        cursor.execute('''
+            INSERT INTO users (user_id, has_paid, updated_at)
+            VALUES (?, 0, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                has_paid = 0,
+                updated_at = excluded.updated_at
+        ''', (user_id, now))
     conn.commit()
     conn.close()
 
