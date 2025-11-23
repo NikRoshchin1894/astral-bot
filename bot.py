@@ -267,8 +267,8 @@ def init_db():
                     event_data TEXT,
                     timestamp TEXT NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-        ''')
+                )
+            ''')
         
         # Индексы (одинаковые для обеих БД)
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
@@ -290,6 +290,9 @@ def init_db():
         
         conn.close()
         logger.info(f"✅ База данных инициализирована ({db_type})")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при инициализации базы данных: {e}", exc_info=True)
+        raise
 
 
 def save_user_profile(user_id, user_data):
