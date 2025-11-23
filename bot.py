@@ -267,29 +267,29 @@ def init_db():
                     event_data TEXT,
                     timestamp TEXT NOT NULL,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
-                )
-            ''')
+            )
+        ''')
         
         # Индексы (одинаковые для обеих БД)
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
-    
-    conn.commit()
-    logger.info(f"Таблицы созданы успешно для БД типа: {db_type}")
-    
-    # Проверяем, что таблицы действительно созданы
-    if db_type == 'postgresql':
-        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
-        tables = cursor.fetchall()
-        logger.info(f"Существующие таблицы в PostgreSQL: {[t[0] for t in tables]}")
-    else:
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = cursor.fetchall()
-        logger.info(f"Существующие таблицы в SQLite: {[t[0] for t in tables]}")
-    
-    conn.close()
-    logger.info(f"✅ База данных инициализирована ({db_type})")
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
+        
+        conn.commit()
+        logger.info(f"Таблицы созданы успешно для БД типа: {db_type}")
+        
+        # Проверяем, что таблицы действительно созданы
+        if db_type == 'postgresql':
+            cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+            tables = cursor.fetchall()
+            logger.info(f"Существующие таблицы в PostgreSQL: {[t[0] for t in tables]}")
+        else:
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = cursor.fetchall()
+            logger.info(f"Существующие таблицы в SQLite: {[t[0] for t in tables]}")
+        
+        conn.close()
+        logger.info(f"✅ База данных инициализирована ({db_type})")
 
 
 def save_user_profile(user_id, user_data):
