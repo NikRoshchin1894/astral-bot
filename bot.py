@@ -5,14 +5,17 @@ Astral Bot - Astrology Telegram Bot
 Астрологический бот для консультаций и получения информации о знаках зодиака
 """
 
+import asyncio
+import json
 import logging
 import os
+import re
 import tempfile
 import time
 import uuid
 from datetime import datetime
-from typing import Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from typing import Optional, Tuple
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.error import Conflict
 from telegram.ext import (
     Application,
@@ -20,14 +23,29 @@ from telegram.ext import (
     CallbackQueryHandler,
     MessageHandler,
     filters,
-    ContextTypes
+    ContextTypes,
+    PreCheckoutQueryHandler,
+    TypeHandler
 )
 from dotenv import load_dotenv
 from openai import OpenAI
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, PageTemplate, BaseDocTemplate, Frame
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.colors import HexColor, Color, black, white
+from reportlab.lib.units import cm
+from reportlab.lib.utils import ImageReader
+import random
 import sqlite3
 import sys
-from fpdf import FPDF
-import requests
+import swisseph as swe
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
+from datetime import datetime, timezone
+import pytz
+from timezonefinder import TimezoneFinder
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -42,6 +60,87 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Словарь для хранения активных генераций натальных карт
+# Формат: {user_id: {'chat_id': int, 'message_id': int, 'birth_data': dict}}
+active_generations = {}
+
+PROMPT_EXAMPLE_PATH = os.getenv('PROMPT_EXAMPLE_PATH', os.path.join('prompt_examples', 'ideal_example.md'))
+
+def load_prompt_example() -> str:
+    """Загружает внешний пример идеального ответа, если файл существует."""
+    try:
+        candidates = []
+        # 1) Явно заданный путь через переменную окружения или дефолт в папке проекта
+        if PROMPT_EXAMPLE_PATH:
+            candidates.append(PROMPT_EXAMPLE_PATH)
+        # 2) Файл txt_example, который пользователь указал (внутри проекта)
+        project_txt_example = os.path.join(os.path.dirname(__file__), 'venv', 'share', 'man', 'man1', 'txt_example')
+        candidates.append(project_txt_example)
+        # 3) Абсолютный путь к txt_example (на случай запуска из другого cwd)
+        candidates.append('/Users/nsroschin/Documents/Astral_Bot/venv/share/man/man1/txt_example')
+
+        for path in candidates:
+            if path and os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        return "\n\nПример идеального ответа (ориентир по стилю; не копировать дословно):\n\n" + content
+    except Exception as err:
+        logger.warning(f"Не удалось загрузить пример промпта: {err}")
+    return ""
+
+def _split_example_by_sections(example_text: str) -> dict:
+    """
+    Делит пример на блоки по разделам. Возвращает словарь с ключами:
+      '1', '2', ..., '7' и агрегированные '1-3', '4-5', '6-7'.
+    Если структура не найдена, возвращает пустой словарь.
+    """
+    if not example_text:
+        return {}
+    import re
+    lines = example_text.splitlines()
+    section_re = re.compile(r'^\s*Раздел\s+(\d+)\b', re.IGNORECASE)
+    current = None
+    buckets = {str(i): [] for i in range(1, 8)}
+    for raw in lines:
+        m = section_re.match(raw.strip())
+        if m:
+            num = m.group(1)
+            if num in buckets:
+                current = num
+            else:
+                current = None
+            # Всегда добавляем заголовок раздела в соответствующий бакет
+            if current:
+                buckets[current].append(raw)
+            continue
+        if current:
+            buckets[current].append(raw)
+    # Сформируем агрегаты
+    def join_bucket(keys):
+        parts = []
+        for k in keys:
+            chunk = "\n".join(buckets.get(k, [])).strip()
+            if chunk:
+                parts.append(chunk)
+        return "\n\n".join(parts).strip()
+    agg = {}
+    # Индивидуальные
+    for i in range(1, 8):
+        joined = join_bucket([str(i)])
+        if joined:
+            agg[str(i)] = joined
+    # Группы
+    j13 = join_bucket(["1", "2", "3"])
+    j45 = join_bucket(["4", "5"])
+    j67 = join_bucket(["6", "7"])
+    if j13:
+        agg["1-3"] = j13
+    if j45:
+        agg["4-5"] = j45
+    if j67:
+        agg["6-7"] = j67
+    return agg
 
 def init_db():
     """Инициализация базы данных"""
@@ -55,9 +154,32 @@ def init_db():
             city TEXT,
             birth_date TEXT,
             birth_time TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            has_paid INTEGER DEFAULT 0
         )
     ''')
+    try:
+        conn.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    
+    # Таблица для аналитики событий
+    conn.execute('''
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            event_type TEXT NOT NULL,
+            event_data TEXT,
+            timestamp TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(user_id)
+        )
+    ''')
+    # Индекс для быстрого поиска по user_id и event_type
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type)')
+    conn.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
+    
     conn.commit()
     conn.close()
     print("База данных инициализирована")
@@ -66,7 +188,7 @@ def init_db():
 def save_user_profile(user_id, user_data):
     """Сохранение профиля пользователя в базу данных"""
     conn = sqlite3.connect(DATABASE)
-    
+
     birth_place = user_data.get('birth_place', '')
     if ',' in birth_place:
         parts = birth_place.split(',')
@@ -75,11 +197,22 @@ def save_user_profile(user_id, user_data):
     else:
         city = birth_place
         country = ''
-    
+
+    cursor = conn.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    has_paid = row[0] if row else 0
+
     conn.execute('''
-        INSERT OR REPLACE INTO users 
-        (user_id, first_name, country, city, birth_date, birth_time, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO users 
+        (user_id, first_name, country, city, birth_date, birth_time, has_paid, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            first_name = excluded.first_name,
+            country = excluded.country,
+            city = excluded.city,
+            birth_date = excluded.birth_date,
+            birth_time = excluded.birth_time,
+            updated_at = excluded.updated_at
     ''', (
         user_id,
         user_data.get('birth_name', ''),
@@ -87,10 +220,20 @@ def save_user_profile(user_id, user_data):
         city,
         user_data.get('birth_date', ''),
         user_data.get('birth_time', ''),
+        has_paid,
         datetime.now().isoformat()
     ))
     conn.commit()
     conn.close()
+    
+    # Логируем сохранение профиля
+    log_event(user_id, 'profile_saved', {
+        'has_birth_name': bool(user_data.get('birth_name')),
+        'has_birth_date': bool(user_data.get('birth_date')),
+        'has_birth_time': bool(user_data.get('birth_time')),
+        'has_birth_place': bool(user_data.get('birth_place')),
+        'is_complete': all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+    })
 
 
 def load_user_profile(user_id):
@@ -103,7 +246,7 @@ def load_user_profile(user_id):
     
     if row:
         columns = ['user_id', 'first_name', 'last_name', 'country', 'city', 
-                   'birth_date', 'birth_time', 'updated_at']
+                   'birth_date', 'birth_time', 'updated_at', 'has_paid']
         result = dict(zip(columns, row))
         
         user_data = {}
@@ -119,28 +262,100 @@ def load_user_profile(user_id):
         elif result['city']:
             user_data['birth_place'] = result['city']
         
+        if result.get('has_paid'):
+            user_data['has_paid'] = bool(result['has_paid'])
         return user_data
     return {}
 
 
+def log_event(user_id: int, event_type: str, event_data: Optional[dict] = None):
+    """
+    Логирует событие в базу данных для аналитики.
+    
+    Args:
+        user_id: ID пользователя Telegram
+        event_type: Тип события (например: 'start', 'button_click', 'payment', 'natal_chart_request')
+        event_data: Дополнительные данные события в формате словаря (будут сохранены как JSON)
+    """
+    try:
+        conn = sqlite3.connect(DATABASE)
+        data_json = json.dumps(event_data, ensure_ascii=False) if event_data else None
+        conn.execute('''
+            INSERT INTO events (user_id, event_type, event_data, timestamp)
+            VALUES (?, ?, ?, ?)
+        ''', (
+            user_id,
+            event_type,
+            data_json,
+            datetime.now().isoformat()
+        ))
+        conn.commit()
+        conn.close()
+        logger.info(f"Event logged: {event_type} for user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to log event: {e}")
+
+
+def user_has_paid(user_id: int) -> bool:
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return bool(row[0]) if row else False
+
+
+def mark_user_paid(user_id: int):
+    conn = sqlite3.connect(DATABASE)
+    now = datetime.now().isoformat()
+    conn.execute('''
+        INSERT INTO users (user_id, has_paid, updated_at)
+        VALUES (?, 1, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            has_paid = 1,
+            updated_at = excluded.updated_at
+    ''', (user_id, now))
+    conn.commit()
+    conn.close()
+
+
+def reset_user_payment(user_id: int):
+    """Сбрасывает статус оплаты после выдачи натальной карты."""
+    conn = sqlite3.connect(DATABASE)
+    now = datetime.now().isoformat()
+    conn.execute('''
+        INSERT INTO users (user_id, has_paid, updated_at)
+        VALUES (?, 0, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            has_paid = 0,
+            updated_at = excluded.updated_at
+    ''', (user_id, now))
+    conn.commit()
+    conn.close()
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
     user = update.effective_user
+    user_id = user.id
+    
+    # Логируем событие старта
+    log_event(user_id, 'start', {
+        'username': user.username,
+        'first_name': user.first_name,
+        'language_code': user.language_code
+    })
+    
     welcome_message = f'''🌟 *Добро пожаловать в АстроБот, {user.first_name}!* 🌟
 
 Этот бот поможет вам получить персональную натальную карту на основе ваших данных рождения.
 
-*Доступные функции:*
-👤 Мой профиль - заполните данные о себе
-📜 Натальная карта - персональная астрологическая карта
-
-Используйте меню ниже:'''
+💳 Стоимость детальной натальной карты — *{NATAL_CHART_PRICE_RUB} ₽*.'''
 
     buttons = [
-        InlineKeyboardButton("👤 Мой профиль", callback_data='my_profile'),
+        InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+        InlineKeyboardButton("🪐 Положение планет", callback_data='planets_info'),
         InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+        InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support'),
     ]
     
     keyboard = InlineKeyboardMarkup([[b] for b in buttons])
@@ -173,7 +388,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
+    user_id = query.from_user.id
     data = query.data
+    
+    # Логируем событие нажатия кнопки
+    log_event(user_id, 'button_click', {
+        'button': data
+    })
     
     if data == 'my_profile':
         await my_profile(query, context)
@@ -195,13 +416,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await natal_chart_start(query, context)
     elif data == 'back_menu':
         await back_to_menu(query)
+    elif data == 'buy_natal_chart':
+        await start_payment_process(query, context)
+    elif data == 'support':
+        await show_support(query, context)
+    elif data == 'planets_info':
+        await show_planets_info(query, context)
+    elif data == 'get_planets_data':
+        await handle_planets_request(query, context)
 
 
 async def back_to_menu(query):
     """Вернуться в главное меню"""
     buttons = [
-        InlineKeyboardButton("👤 Мой профиль", callback_data='my_profile'),
+        InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+        InlineKeyboardButton("🪐 Положение планет", callback_data='planets_info'),
         InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+        InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support'),
     ]
     
     keyboard = InlineKeyboardMarkup([[b] for b in buttons])
@@ -212,9 +443,267 @@ async def back_to_menu(query):
     )
 
 
-async def my_profile(query, context):
-    """Мой профиль"""
+async def show_support(query, context):
+    """Показывает информацию о поддержке"""
     user_id = query.from_user.id
+    
+    # Логируем обращение к поддержке
+    log_event(user_id, 'support_contacted', {})
+    
+    support_message = '''💬 <b>Поддержка и обратная связь</b>
+
+Если у вас возникли вопросы, проблемы или есть предложения по улучшению бота, напишите нам:
+
+📧 @Astral_bot_support
+
+Мы постараемся ответить как можно скорее! ✨'''
+    
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+    ]])
+    
+    # Используем HTML parse mode, чтобы нижнее подчеркивание в username не интерпретировалось как форматирование
+    await query.edit_message_text(
+        support_message,
+        reply_markup=keyboard,
+        parse_mode='HTML'
+    )
+
+
+async def show_planets_info(query, context):
+    """Показывает информацию о бесплатной опции 'Положение планет'"""
+    user_id = query.from_user.id
+    
+    # Логируем просмотр информации о планетах
+    log_event(user_id, 'planets_info_viewed', {})
+    
+    info_message = f'''🪐 *Положение планет*
+
+Здесь вы можете получить данные, на основе которых строится ваша натальная карта:
+
+• Положение планет (Солнце, Луна, Меркурий, Венера, Марс, Юпитер, Сатурн, Уран, Нептун, Плутон)
+• Ваши дома (куспиды домов)
+• Асцендент, MC, IC, Десцендент
+• Лунные узлы
+• Аспекты между планетами
+
+Чтобы получить интерпретацию этих данных, перейдите в пункт "📜 Натальная карта" и оплатите {NATAL_CHART_PRICE_RUB} ₽.'''
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Узнать положение планет", callback_data='get_planets_data')],
+        [InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart')],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
+    ])
+    
+    await query.edit_message_text(
+        info_message,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+
+def format_planets_data_for_user(chart_data: dict) -> str:
+    """
+    Форматирование данных натальной карты для отображения пользователю.
+    Более читабельный формат, чем для промпта.
+    """
+    lines = []
+    
+    lines.append("🪐 <b>ПОЛОЖЕНИЕ ПЛАНЕТ И АСТРОЛОГИЧЕСКИЕ ДАННЫЕ</b>\n")
+    
+    planet_ru = {
+        'Sun': 'Солнце',
+        'Moon': 'Луна',
+        'Mercury': 'Меркурий',
+        'Venus': 'Венера',
+        'Mars': 'Марс',
+        'Jupiter': 'Юпитер',
+        'Saturn': 'Сатурн',
+        'Uranus': 'Уран',
+        'Neptune': 'Нептун',
+        'Pluto': 'Плутон',
+    }
+    
+    # Личные планеты
+    lines.append("<b>📌 Личные планеты:</b>")
+    personal_planets = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars']
+    for planet_name in personal_planets:
+        if planet_name in chart_data['planets']:
+            planet_info = chart_data['planets'][planet_name]
+            planet_name_ru = planet_ru.get(planet_name, planet_name)
+            retrograde = " (R)" if planet_info['is_retrograde'] else ""
+            lines.append(
+                f"  • {planet_name_ru}: {planet_info['sign']} {planet_info['sign_degrees']:.1f}°{retrograde}"
+            )
+    
+    # Социальные планеты
+    lines.append("\n<b>🌍 Социальные планеты:</b>")
+    social_planets = ['Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto']
+    for planet_name in social_planets:
+        if planet_name in chart_data['planets']:
+            planet_info = chart_data['planets'][planet_name]
+            planet_name_ru = planet_ru.get(planet_name, planet_name)
+            retrograde = " (R)" if planet_info['is_retrograde'] else ""
+            lines.append(
+                f"  • {planet_name_ru}: {planet_info['sign']} {planet_info['sign_degrees']:.1f}°{retrograde}"
+            )
+    
+    # Ретроградные планеты
+    if chart_data['retrograde_planets']:
+        lines.append("\n<b>🔄 Ретроградные планеты на момент рождения:</b>")
+        for retro_planet in chart_data['retrograde_planets']:
+            lines.append(f"  • {planet_ru.get(retro_planet, retro_planet)}")
+    else:
+        lines.append("\n<b>🔄 Ретроградные планеты:</b> нет")
+    
+    # Угловые точки
+    lines.append("\n<b>📍 Угловые точки карты:</b>")
+    lines.append(f"  • Асцендент (ASC): {chart_data['ascendant']['sign']} "
+                 f"{chart_data['ascendant']['sign_degrees']:.1f}°")
+    lines.append(f"  • MC (Середина неба): {chart_data['mc']['sign']} "
+                 f"{chart_data['mc']['sign_degrees']:.1f}°")
+    lines.append(f"  • IC (Глубина неба): {chart_data['ic']['sign']} "
+                 f"{chart_data['ic']['sign_degrees']:.1f}°")
+    dsc_degrees = (chart_data['ascendant']['sign_degrees'] + 180) % 360
+    lines.append(f"  • DSC (Десцендент): {chart_data['ascendant']['sign']} {dsc_degrees:.1f}°")
+    
+    # Куспиды домов
+    lines.append("\n<b>🏠 Куспиды домов (система Placidus):</b>")
+    for house_num in range(1, 13):
+        house_key = f'House{house_num}'
+        if house_key in chart_data['houses']:
+            house_info = chart_data['houses'][house_key]
+            lines.append(
+                f"  • Дом {house_num}: {house_info['sign']} {house_info['sign_degrees']:.1f}°"
+            )
+    
+    # Планеты в домах
+    lines.append("\n<b>⭐ Планеты в домах:</b>")
+    for planet_name in ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto']:
+        if planet_name in chart_data['planets_in_houses']:
+            house_num = chart_data['planets_in_houses'][planet_name]
+            lines.append(f"  • {planet_ru.get(planet_name, planet_name)}: Дом {house_num}")
+    
+    # Лунные узлы
+    lines.append("\n<b>🌙 Лунные узлы:</b>")
+    lines.append(f"  • Северный узел (Раху): {chart_data['north_node']['sign']} "
+                 f"{chart_data['north_node']['sign_degrees']:.1f}°")
+    lines.append(f"  • Южный узел (Кету): {chart_data['south_node']['sign']} "
+                 f"{chart_data['south_node']['sign_degrees']:.1f}°")
+    
+    # Аспекты
+    lines.append("\n<b>🔗 Главные аспекты между планетами:</b>")
+    if chart_data['aspects']:
+        for aspect in chart_data['aspects']:
+            p1_ru = planet_ru.get(aspect['planet1'], aspect['planet1'])
+            p2_ru = planet_ru.get(aspect['planet2'], aspect['planet2'])
+            lines.append(
+                f"  • {p1_ru} {aspect['aspect']} {p2_ru} (орбис {aspect['orb']:.1f}°)"
+            )
+    else:
+        lines.append("  Нет значимых аспектов в указанных орбисах")
+    
+    lines.append("\n💡 <i>Для получения интерпретации этих данных перейдите в раздел '📜 Натальная карта'</i>")
+    
+    return "\n".join(lines)
+
+
+async def handle_planets_request(query, context):
+    """Обработка запроса на получение данных о планетах"""
+    user_id = query.from_user.id
+    
+    # Логируем запрос данных о планетах
+    log_event(user_id, 'planets_data_requested', {})
+    
+    # Загружаем профиль пользователя
+    profile = load_user_profile(user_id)
+    
+    # Проверяем наличие всех необходимых данных
+    if not profile or not all([
+        profile.get('birth_name'), 
+        profile.get('birth_date'), 
+        profile.get('birth_time'), 
+        profile.get('birth_place')
+    ]):
+        await query.answer("❌ Сначала заполните данные в разделе '📋 Данные о рождении'", show_alert=True)
+        return
+    
+    try:
+        # Показываем сообщение о загрузке
+        await query.answer("⏳ Рассчитываю данные...")
+        
+        # Преобразуем профиль в формат, который ожидает calculate_natal_chart
+        birth_data = {
+            'name': profile.get('birth_name', ''),
+            'date': profile.get('birth_date', ''),
+            'time': profile.get('birth_time', ''),
+            'place': profile.get('birth_place', '')
+        }
+        
+        # Расчет натальной карты через Swiss Ephemeris
+        chart_data = calculate_natal_chart(birth_data)
+        
+        # Форматирование данных для пользователя
+        planets_text = format_planets_data_for_user(chart_data)
+        
+        # Логируем успешное получение данных
+        log_event(user_id, 'planets_data_success', {})
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📜 Получить интерпретацию (400 ₽)", callback_data='natal_chart')],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
+        ])
+        
+        # Отправляем данные (Telegram имеет лимит 4096 символов на сообщение)
+        if len(planets_text) > 4000:
+            # Разбиваем на части
+            parts = []
+            current_part = ""
+            for line in planets_text.split('\n'):
+                if len(current_part) + len(line) + 1 > 4000:
+                    parts.append(current_part)
+                    current_part = line + "\n"
+                else:
+                    current_part += line + "\n"
+            if current_part:
+                parts.append(current_part)
+            
+            # Отправляем первую часть с клавиатурой
+            await query.edit_message_text(
+                parts[0],
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+            
+            # Отправляем остальные части
+            for part in parts[1:]:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=part,
+                    parse_mode='HTML'
+                )
+        else:
+            await query.edit_message_text(
+                planets_text,
+                reply_markup=keyboard,
+                parse_mode='HTML'
+            )
+            
+    except Exception as e:
+        logger.error(f"Ошибка при расчете данных о планетах для пользователя {user_id}: {e}", exc_info=True)
+        
+        # Логируем ошибку
+        log_event(user_id, 'planets_data_error', {'error': str(e)})
+        
+        await query.answer("❌ Произошла ошибка при расчете данных. Попробуйте позже.", show_alert=True)
+
+
+async def my_profile(query, context):
+    """Данные о рождении"""
+    user_id = query.from_user.id
+    
+    # Логируем просмотр профиля
+    log_event(user_id, 'profile_viewed', {})
     user_data = context.user_data
     
     db_data = load_user_profile(user_id)
@@ -222,9 +711,14 @@ async def my_profile(query, context):
         user_data.update(db_data)
     
     has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+    paid_status = user_data.get('has_paid') or user_has_paid(user_id)
+    if paid_status:
+        user_data['has_paid'] = True
     
     if has_profile:
-        profile_text = f'''👤 *Мой профиль*
+        profile_text = f'''📋 *Данные о рождении*
+
+💡 Вы можете ввести данные любого человека для расчета натальной карты.
 
 *Данные:*
 🆔 Имя: {user_data.get('birth_name', 'Не указано')}
@@ -233,22 +727,25 @@ async def my_profile(query, context):
 🌍 Место рождения: {user_data.get('birth_place', 'Не указано')}'''
         
         buttons = [
-            InlineKeyboardButton("✏️ Редактировать профиль", callback_data='select_edit_field'),
-            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            InlineKeyboardButton("✏️ Редактировать данные", callback_data='select_edit_field'),
+            InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
         ]
     else:
-        profile_text = '''👤 *Мой профиль*
+        profile_text = '''📋 *Данные о рождении*
 
-❌ Профиль не заполнен
+💡 Вы можете ввести данные любого человека для расчета натальной карты.
 
-Для получения натальной карты необходимо заполнить профиль.'''
+❌ Данные не заполнены
+
+Для получения натальной карты необходимо заполнить данные.'''
         
         buttons = [
-            InlineKeyboardButton("➕ Заполнить профиль", callback_data='edit_profile'),
+            InlineKeyboardButton("➕ Заполнить данные", callback_data='edit_profile'),
             InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
         ]
     
-    keyboard = InlineKeyboardMarkup([buttons])
+    keyboard = InlineKeyboardMarkup([[button] for button in buttons])
     await query.edit_message_text(
         profile_text,
         reply_markup=keyboard,
@@ -259,7 +756,7 @@ async def my_profile(query, context):
 async def select_edit_field(query, context):
     """Выбор поля для редактирования"""
     await query.edit_message_text(
-        "✏️ *Редактирование профиля*\n\n"
+        "✏️ *Редактирование данных о рождении*\n\n"
         "Выберите, что вы хотите изменить:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🆔 Имя", callback_data='edit_name')],
@@ -272,12 +769,51 @@ async def select_edit_field(query, context):
     )
 
 
+async def start_payment_process(query, context):
+    """Начало процесса оплаты через Telegram Payments"""
+    user_id = query.from_user.id
+    
+    # Логируем начало процесса оплаты
+    log_event(user_id, 'payment_start', {
+        'amount_rub': NATAL_CHART_PRICE_RUB,
+        'amount_minor': NATAL_CHART_PRICE_MINOR
+    })
+    
+    provider_token = os.getenv('TELEGRAM_PROVIDER_TOKEN')
+    if not provider_token:
+        await query.answer("Настройка оплаты не завершена. Свяжитесь с администратором.", show_alert=True)
+        log_event(user_id, 'payment_error', {'error': 'provider_token_not_set'})
+        return
+
+    prices = [LabeledPrice(label='Натальная карта', amount=NATAL_CHART_PRICE_MINOR)]
+    payload = f"natal_chart:{query.from_user.id}:{uuid.uuid4()}"
+
+    await query.answer()
+    await query.message.reply_invoice(
+        title='Натальная карта',
+        description=f'Подробная натальная карта в PDF-формате. Стоимость {NATAL_CHART_PRICE_RUB} ₽.',
+        payload=payload,
+        provider_token=provider_token,
+        currency='RUB',
+        prices=prices,
+        need_name=True
+    )
+
+    menu_keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+    ]])
+    await query.message.reply_text(
+        "Если хотите вернуться, нажмите «Главное меню».",
+        reply_markup=menu_keyboard
+    )
+
+
 async def start_edit_field(query, context, field_type):
     """Начало редактирования конкретного поля"""
     user_data = context.user_data
     
     field_info = {
-        'name': ('имя', 'Просто введите ваше имя'),
+        'name': ('имя', 'Введите имя (может быть любого человека)'),
         'date': ('дату рождения', 'Введите дату рождения в формате: ДД.ММ.ГГГГ\nНапример: 15.03.1990'),
         'time': ('время рождения', 'Введите время рождения в формате: ЧЧ:ММ\nНапример: 14:30'),
         'place': ('место рождения', 'Введите место рождения (город, страна)\nНапример: Москва, Россия')
@@ -300,33 +836,80 @@ async def start_edit_field(query, context, field_type):
 
 async def handle_natal_chart_request(query, context):
     """Обработка запроса на натальную карту"""
+    user_id = query.from_user.id
     user_data = context.user_data
+    
+    # Проверяем, не идет ли уже генерация для этого пользователя
+    if user_id in active_generations:
+        await query.edit_message_text(
+            "⏳ *Генерация уже идет...*\n\n"
+            "Пожалуйста, подождите завершения текущей генерации натальной карты.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+                [InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support')]
+            ]),
+            parse_mode='Markdown'
+        )
+        return
     
     # Загружаем профиль из БД, если его нет в user_data
     if not user_data.get('birth_name'):
-        user_id = query.from_user.id
         loaded_data = load_user_profile(user_id)
         if loaded_data:
             user_data.update(loaded_data)
     
     has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+    paid_status = user_has_paid(user_id)
+    if paid_status:
+        user_data['has_paid'] = True
     
     if not has_profile:
+        # Логируем попытку запроса натальной карты без профиля
+        log_event(user_id, 'natal_chart_request_no_profile', {})
         await query.edit_message_text(
-            "❌ *Профиль не заполнен*\n\n"
-            "Для получения натальной карты необходимо заполнить профиль.\n\n"
+            "❌ *Данные не заполнены*\n\n"
+            "Для получения натальной карты необходимо заполнить данные о рождении.\n\n"
+            "💡 Вы можете ввести данные любого человека.\n\n"
             "Нажмите кнопку ниже, чтобы заполнить данные:",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("➕ Заполнить профиль", callback_data='natal_chart_start'),
+                InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]]),
             parse_mode='Markdown'
         )
         return
     
+    if not paid_status:
+        # Логируем попытку запроса натальной карты без оплаты
+        log_event(user_id, 'natal_chart_request_no_payment', {})
+        await query.edit_message_text(
+            "💳 *Оплата натальной карты*\n\n"
+            f"Для получения персональной натальной карты требуется оплата *{NATAL_CHART_PRICE_RUB} ₽*.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("💳 Оплатить", callback_data='buy_natal_chart'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+            ]]),
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Логируем начало генерации натальной карты
+    log_event(user_id, 'natal_chart_generation_start', {
+        'birth_date': user_data.get('birth_date'),
+        'birth_time': user_data.get('birth_time'),
+        'birth_place': user_data.get('birth_place')
+    })
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+        [InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support')]
+    ])
+    
     await query.edit_message_text(
         "⏳ *Генерация натальной карты...*\n\n"
-        "Пожалуйста, подождите..."
+        "Пожалуйста, подождите. Обычно это занимает не более 5 минут.",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
     )
     
     birth_data = {
@@ -350,70 +933,126 @@ async def handle_natal_chart_request(query, context):
         )
         return
     
+    # Сохраняем информацию о генерации для отправки результата после завершения
+    active_generations[user_id] = {
+        'chat_id': query.message.chat_id,
+        'message_id': query.message.message_id,
+        'birth_data': birth_data,
+        'openai_key': openai_key
+    }
+    
+    # Запускаем генерацию в фоне, чтобы кнопки навигации работали
+    asyncio.create_task(generate_natal_chart_background(user_id, context))
+
+
+async def generate_natal_chart_background(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Генерация натальной карты в фоновом режиме"""
+    if user_id not in active_generations:
+        logger.warning(f"Генерация для пользователя {user_id} не найдена в active_generations")
+        return
+    
+    gen_info = active_generations[user_id]
+    chat_id = gen_info['chat_id']
+    message_id = gen_info['message_id']
+    birth_data = gen_info['birth_data']
+    openai_key = gen_info['openai_key']
+    
+    payment_consumed = False
+    
     try:
-        natal_chart = generate_natal_chart_with_gpt(birth_data, openai_key)
-        pdf_path = generate_pdf_from_text(natal_chart, birth_data)
+        # Запускаем синхронную генерацию в отдельном потоке
+        pdf_path, summary_text = await asyncio.to_thread(
+            generate_natal_chart_with_gpt, 
+            birth_data, 
+            openai_key
+        )
 
-        async def send_text_version(text):
-            """Отправка текстовой версии натальной карты (fallback)"""
-            max_length = 4000  # Лимит Telegram - 4096 символов, оставляем запас
+        async def send_text_message(text: str, chat: int, msg_id: int, is_edit: bool):
+            """Отправка текстового сообщения с безопасной обработкой Markdown."""
+            max_length = 4000
 
-            async def send_message_safe(message_text, is_edit=False):
-                """Безопасная отправка сообщения с обработкой ошибок парсинга"""
-                try:
-                    if is_edit:
-                        await query.edit_message_text(message_text, parse_mode='Markdown')
-                    else:
-                        await query.message.reply_text(message_text, parse_mode='Markdown')
-                except Exception as parse_error:
-                    logger.warning(f"Ошибка парсинга Markdown: {parse_error}, очищаем и отправляем без форматирования")
-                    cleaned_text = clean_markdown(message_text)
+            async def do_send(message_text: str, edit: bool):
+                if edit:
                     try:
-                        if is_edit:
-                            await query.edit_message_text(cleaned_text, parse_mode='Markdown')
-                        else:
-                            await query.message.reply_text(cleaned_text, parse_mode='Markdown')
-                    except Exception as second_error:
-                        logger.warning(f"Ошибка после очистки: {second_error}, отправляем без форматирования")
-                        plain_text = message_text.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
-                        if is_edit:
-                            await query.edit_message_text(plain_text)
-                        else:
-                            await query.message.reply_text(plain_text)
-
-            if len(text) <= max_length:
-                await send_message_safe(text, is_edit=True)
-            else:
-                first_part = text[:max_length]
-                last_newline = first_part.rfind('\n')
-                if last_newline > max_length * 0.8:
-                    first_part = text[:last_newline]
-                    remaining = text[last_newline + 1:]
+                        await context.bot.edit_message_text(
+                            chat_id=chat,
+                            message_id=msg_id,
+                            text=message_text,
+                            parse_mode='Markdown'
+                        )
+                    except Exception as e:
+                        # Если не удалось отредактировать, отправляем новое сообщение
+                        await context.bot.send_message(
+                            chat_id=chat,
+                            text=message_text,
+                            parse_mode='Markdown'
+                        )
                 else:
-                    remaining = text[max_length:]
+                    await context.bot.send_message(
+                        chat_id=chat,
+                        text=message_text,
+                        parse_mode='Markdown'
+                    )
 
-                await send_message_safe(first_part, is_edit=True)
-
-                while remaining:
-                    if len(remaining) <= max_length:
-                        await send_message_safe(remaining, is_edit=False)
-                        break
-                    chunk = remaining[:max_length]
-                    last_newline = chunk.rfind('\n')
+            try:
+                if len(text) <= max_length:
+                    await do_send(text, is_edit)
+                else:
+                    first_part = text[:max_length]
+                    last_newline = first_part.rfind('\n')
                     if last_newline > max_length * 0.8:
-                        chunk = remaining[:last_newline]
-                        remaining = remaining[last_newline + 1:]
+                        first_part = text[:last_newline]
+                        remaining = text[last_newline + 1:]
                     else:
-                        remaining = remaining[max_length:]
+                        remaining = text[max_length:]
 
-                    await send_message_safe(chunk, is_edit=False)
+                    await do_send(first_part, is_edit)
+
+                    while remaining:
+                        if len(remaining) <= max_length:
+                            await do_send(remaining, False)
+                            break
+                        chunk = remaining[:max_length]
+                        last_newline = chunk.rfind('\n')
+                        if last_newline > max_length * 0.8:
+                            chunk = remaining[:last_newline]
+                            remaining = remaining[last_newline + 1:]
+                        else:
+                            remaining = remaining[max_length:]
+
+                        await do_send(chunk, False)
+            except Exception as parse_error:
+                logger.warning(f"Ошибка парсинга Markdown: {parse_error}, пробуем очистить текст")
+                cleaned_text = clean_markdown(text)
+                try:
+                    await do_send(cleaned_text, is_edit)
+                except Exception as second_error:
+                    logger.warning(f"Не удалось отправить даже очищенный текст: {second_error}, отправляем без форматирования")
+                    plain_text = text.replace('*', '').replace('_', '').replace('`', '').replace('[', '').replace(']', '')
+                    if is_edit:
+                        try:
+                            await context.bot.edit_message_text(chat_id=chat, message_id=msg_id, text=plain_text)
+                        except:
+                            await context.bot.send_message(chat_id=chat, text=plain_text)
+                    else:
+                        await context.bot.send_message(chat_id=chat, text=plain_text)
 
         if pdf_path:
             try:
-                await query.edit_message_text(
-                    "📄 *Натальная карта готова!*\n\nПолный отчет в PDF во вложении.",
-                    parse_mode='Markdown'
-                )
+                try:
+                    await context.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text="📄 *Натальная карта готова!*\n\nПолный отчет в PDF во вложении.",
+                        parse_mode='Markdown'
+                    )
+                except:
+                    # Если не удалось отредактировать, отправляем новое сообщение
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="📄 *Натальная карта готова!*\n\nПолный отчет в PDF во вложении.",
+                        parse_mode='Markdown'
+                    )
 
                 safe_name = ''.join(
                     ch for ch in birth_data.get('name', 'user') if ch.isalnum() or ch in ('_', '-', ' ')
@@ -423,14 +1062,49 @@ async def handle_natal_chart_request(query, context):
                 filename = f"natal_chart_{safe_name.replace(' ', '_')}.pdf"
                 caption = "📄 Натальная карта в формате PDF"
                 with open(pdf_path, 'rb') as pdf_file:
-                    await query.message.reply_document(
+                    await context.bot.send_document(
+                        chat_id=chat_id,
                         document=pdf_file,
                         filename=filename,
                         caption=caption
                     )
+
+                payment_consumed = True
+                
+                # Логируем успешную отправку натальной карты
+                log_event(user_id, 'natal_chart_success', {
+                    'filename': filename,
+                    'birth_date': birth_data.get('date'),
+                    'birth_time': birth_data.get('time'),
+                    'birth_place': birth_data.get('place')
+                })
+                
+                # Отправляем сообщение с кнопкой для возврата в главное меню
+                menu_keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                ]])
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Используйте кнопки меню для навигации:",
+                    reply_markup=menu_keyboard
+                )
             except Exception as pdf_error:
                 logger.error(f"Ошибка при отправке PDF: {pdf_error}")
-                await send_text_version("⚠️ Не удалось отправить PDF. Отправляю текстовую версию.\n\n" + natal_chart)
+                log_event(user_id, 'natal_chart_error', {
+                    'error': str(pdf_error),
+                    'stage': 'pdf_send'
+                })
+                await send_text_message("⚠️ Не удалось отправить PDF. Попробуйте позже.", chat_id, message_id, is_edit=True)
+                # Добавляем кнопку Повторить попытку
+                retry_keyboard = InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]])
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text="Вы можете повторить попытку генерации отчёта.",
+                    reply_markup=retry_keyboard
+                )
             finally:
                 if pdf_path and os.path.exists(pdf_path):
                     try:
@@ -438,28 +1112,59 @@ async def handle_natal_chart_request(query, context):
                     except OSError as remove_error:
                         logger.warning(f"Не удалось удалить временный PDF-файл: {remove_error}")
         else:
-            logger.warning("Не удалось сформировать PDF. Отправляем текстовую версию натальной карты.")
-            await send_text_version("⚠️ Не удалось сформировать PDF. Отправляю текстовую версию.\n\n" + natal_chart)
-        
-        buttons = InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-        ]])
-        await query.message.reply_text(
-            "Используйте кнопки меню для навигации:",
-            reply_markup=buttons
-        )
+            await send_text_message("⚠️ Не удалось получить PDF. Попробуйте позже.", chat_id, message_id, is_edit=True)
+            # Не списываем оплату, позволяем повторить генерацию
+            retry_keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            ]])
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Вы можете повторить попытку генерации отчёта.",
+                reply_markup=retry_keyboard
+            )
         
     except Exception as e:
-        logger.error(f"Ошибка при генерации натальной карты: {e}")
-        await query.edit_message_text(
-            "❌ *Ошибка*\n\n"
-            "Произошла ошибка при генерации натальной карты.\n"
-            "Попробуйте еще раз позже.",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]]),
-            parse_mode='Markdown'
-        )
+        logger.error(f"Ошибка при генерации натальной карты для пользователя {user_id}: {e}", exc_info=True)
+        log_event(user_id, 'natal_chart_error', {
+            'error': str(e),
+            'stage': 'generation'
+        })
+        try:
+            await context.bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text="❌ *Ошибка*\n\n"
+                     "Произошла ошибка при генерации натальной карты.\n"
+                     "Попробуйте ещё раз.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart')],
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+                ]),
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="❌ *Ошибка*\n\n"
+                     "Произошла ошибка при генерации натальной карты.\n"
+                     "Попробуйте ещё раз.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart')],
+                    [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+                ]),
+                parse_mode='Markdown'
+            )
+    finally:
+        # Сначала удаляем информацию о генерации, чтобы предотвратить дублирующие запросы
+        if user_id in active_generations:
+            del active_generations[user_id]
+        
+        # Затем сбрасываем оплату только после успешной отправки
+        # Это делается здесь, чтобы гарантировать, что оплата сброшена только после завершения всей операции
+        if payment_consumed:
+            reset_user_payment(user_id)
+            logger.info(f"Оплата сброшена для пользователя {user_id} после успешной генерации натальной карты")
 
 
 def validate_date(date_str):
@@ -523,20 +1228,6 @@ def validate_place(place_str):
     return True, None
 
 
-FONTS_DIR = os.path.join(os.path.dirname(__file__), 'fonts')
-FONT_CANDIDATES = [
-    os.path.join(FONTS_DIR, 'DejaVuSans.ttf'),
-    os.path.join(FONTS_DIR, 'NotoSans-Regular.ttf'),
-    '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
-    '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
-    '/usr/share/fonts/truetype/freefont/FreeSans.ttf'
-]
-FONT_DOWNLOAD_CANDIDATES = [
-    ('DejaVuSans.ttf', 'https://github.com/dejavu-fonts/dejavu-fonts/raw/master/ttf/DejaVuSans.ttf'),
-    ('NotoSans-Regular.ttf', 'https://github.com/google/fonts/raw/main/ofl/notosans/NotoSans-Regular.ttf'),
-]
-
-
 def clean_markdown(text):
     """Очистка и исправление Markdown для Telegram"""
     import re
@@ -568,95 +1259,354 @@ def clean_markdown(text):
     return text
 
 
-def _strip_markdown(text: str) -> str:
-    """Простое удаление Markdown-символов для формирования PDF"""
-    replacements = {
-        '**': '',
-        '*': '',
-        '_': '',
-        '`': '',
-    }
-    cleaned = text
-    for old, new in replacements.items():
-        cleaned = cleaned.replace(old, new)
-    return cleaned
+REPORTLAB_FONT_CANDIDATES = [
+    os.path.join(os.path.dirname(__file__), 'fonts', 'DejaVuSans.ttf'),
+    '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+    '/Library/Fonts/Arial Unicode.ttf',
+    '/System/Library/Fonts/Supplemental/Arial.ttf',
+    '/Library/Fonts/Arial.ttf',
+]
+
+NATAL_CHART_PRICE_RUB = 400
+NATAL_CHART_PRICE_MINOR = NATAL_CHART_PRICE_RUB * 100  # копейки для Telegram
 
 
-def _find_font_path() -> Optional[str]:
-    """Поиск доступного шрифта с поддержкой кириллицы"""
-    for candidate in FONT_CANDIDATES:
+def _register_reportlab_font() -> str:
+    for candidate in REPORTLAB_FONT_CANDIDATES:
         if os.path.exists(candidate):
-            return candidate
-
-    os.makedirs(FONTS_DIR, exist_ok=True)
-
-    for filename, _ in FONT_DOWNLOAD_CANDIDATES:
-        local_path = os.path.join(FONTS_DIR, filename)
-        if os.path.exists(local_path):
-            return local_path
-
-    for filename, url in FONT_DOWNLOAD_CANDIDATES:
-        local_path = os.path.join(FONTS_DIR, filename)
-        try:
-            logger.info(f"Загрузка шрифта для PDF: {filename} из {url}")
-            response = requests.get(url, timeout=20)
-            if response.status_code == 200 and response.content:
-                with open(local_path, 'wb') as font_file:
-                    font_file.write(response.content)
-                logger.info(f"Шрифт {filename} успешно загружен в {local_path}")
-                return local_path
-            logger.warning(f"Не удалось загрузить шрифт {filename}: статус {response.status_code}")
-        except Exception as download_error:
-            logger.warning(f"Ошибка при загрузке шрифта {filename}: {download_error}")
-
-    return None
-
-
-def generate_pdf_from_text(natal_chart_text: str, birth_data: dict) -> Optional[str]:
-    """Генерация PDF-файла с натальной картой и возврат пути к файлу"""
-    try:
-        plain_text = _strip_markdown(natal_chart_text)
-        font_path = _find_font_path()
-
-        pdf = FPDF()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        pdf.add_page()
-
-        use_unicode_font = False
-        if font_path:
             try:
-                pdf.add_font('CustomFont', '', font_path, uni=True)
-                pdf.set_font('CustomFont', size=12)
-                use_unicode_font = True
+                pdfmetrics.registerFont(TTFont('ReportLabUnicode', candidate))
+                return 'ReportLabUnicode'
             except Exception as font_error:
-                logger.warning(
-                    f"Не удалось загрузить шрифт {font_path}: {font_error}. Используем стандартный Helvetica без Unicode."
-                )
+                logger.warning(f"Не удалось зарегистрировать шрифт {candidate}: {font_error}")
+    logger.warning("Не найден Unicode-шрифт. Будет использован встроенный шрифт без кириллицы.")
+    return 'Helvetica'
 
-        title = birth_data.get('name', 'Пользователь')
 
-        if not use_unicode_font:
-            logger.warning("Используется базовый шрифт без поддержки Unicode. Кириллица будет удалена из PDF.")
-            plain_text = plain_text.encode('latin-1', 'ignore').decode('latin-1')
-            title = title.encode('latin-1', 'ignore').decode('latin-1') or 'Natalnaya karta'
-            header_text = "Natalnaya karta"
-            pdf.set_font('Helvetica', size=12)
-        else:
-            header_text = "Натальная карта"
+def _clean_inline_markdown(text: str) -> str:
+    replacements = [
+        ('**', ''),
+        ('__', ''),
+        ('*', ''),
+        ('`', ''),
+        ('\u2014', '—'),
+    ]
+    cleaned = text
+    for old, new in replacements:
+        cleaned = cleaned.replace(old, new)
+    return cleaned.strip()
 
-        pdf.cell(0, 10, f"{header_text}: {title}", ln=True, align='C')
-        pdf.ln(5)
 
-        for line in plain_text.split('\n'):
-            pdf.multi_cell(0, 8, line if line.strip() else '')
+def _extract_summary(markdown_text: str) -> Optional[str]:
+    lines = markdown_text.split('\n')
+    buffer = []
+    capturing = False
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith('##'):
+            header = line.lstrip('#').strip().lower()
+            if 'крат' in header and 'резюм' in header:
+                capturing = True
+                continue
+            elif capturing:
+                break
+        if capturing:
+            buffer.append(raw_line)
+
+    summary = '\n'.join(buffer).strip()
+    if summary:
+        return summary
+
+    # Фолбэк: первые ~10 строк текста
+    preview = '\n'.join(lines[:10]).strip()
+    return preview or None
+
+
+def draw_cosmic_background(canvas, doc):
+    """Рисует космический фон со звёздами для каждой страницы"""
+    # Космические цвета
+    dark_blue = HexColor('#0a0e27')  # Тёмно-синий космос
+    deep_purple = HexColor('#1a1a3e')  # Глубокий фиолетовый
+    star_gold = HexColor('#ffd700')  # Золотые звёзды
+    star_silver = HexColor('#c0c0c0')  # Серебристые звёзды
+    nebula_purple = HexColor('#6b3fa0')  # Туманность фиолетовая
+    nebula_blue = HexColor('#2d5aa0')  # Туманность синяя
+    
+    width, height = A4
+    
+    # Градиентный фон (от тёмного к чуть светлее)
+    canvas.setFillColor(dark_blue)
+    canvas.rect(0, 0, width, height, fill=1, stroke=0)
+    
+    # Добавляем туманность (градиентные круги)
+    canvas.setFillColor(nebula_purple)
+    canvas.setFillAlpha(0.15)
+    canvas.circle(width * 0.2, height * 0.8, width * 0.3, fill=1, stroke=0)
+    
+    canvas.setFillColor(nebula_blue)
+    canvas.setFillAlpha(0.1)
+    canvas.circle(width * 0.8, height * 0.2, width * 0.4, fill=1, stroke=0)
+    
+    canvas.setFillAlpha(1.0)
+    
+    # Рисуем звёзды
+    random.seed(42)  # Для одинаковых звёзд на всех страницах
+    for _ in range(80):
+        x = random.uniform(0, width)
+        y = random.uniform(0, height)
+        star_size = random.choice([1, 1.5, 2])
+        star_color = random.choice([star_gold, star_silver])
+        
+        canvas.setFillColor(star_color)
+        canvas.setFillAlpha(random.uniform(0.6, 1.0))
+        canvas.circle(x, y, star_size, fill=1, stroke=0)
+    
+    canvas.setFillAlpha(1.0)
+    
+    # Декоративные линии по краям (космические поля)
+    canvas.setStrokeColor(HexColor('#1a4a6a'))
+    canvas.setStrokeAlpha(0.3)
+    canvas.setLineWidth(1)
+    # Верхняя линия
+    canvas.line(0, height - 20, width, height - 20)
+    # Нижняя линия
+    canvas.line(0, 20, width, 20)
+    
+    canvas.setStrokeAlpha(1.0)
+
+
+# Путь к статичному изображению натальной карты
+NATAL_CHART_IMAGE_PATH = os.path.join(os.path.dirname(__file__), 'images', 'natal_chart.png')
+
+def draw_static_natal_chart_image(canvas, doc):
+    """Рисует статичное изображение натальной карты на первой странице (половина страницы, прозрачный фон)"""
+    if not os.path.exists(NATAL_CHART_IMAGE_PATH):
+        # Если изображение не найдено, просто пропускаем (не критично)
+        return
+    
+    try:
+        from reportlab.lib.utils import ImageReader
+        
+        width, height = A4
+        
+        # Размер изображения - половина страницы по меньшей стороне
+        page_min_dimension = min(width, height)
+        image_size = page_min_dimension / 2  # Половина страницы
+        
+        # Центрируем изображение
+        image_x = (width - image_size) / 2
+        image_y = height - 140 - image_size  # Под заголовком (уменьшен отступ)
+        
+        # Загружаем и рисуем изображение с поддержкой прозрачности
+        img = ImageReader(NATAL_CHART_IMAGE_PATH)
+        
+        # ReportLab автоматически поддерживает прозрачность PNG
+        canvas.drawImage(
+            img, 
+            image_x, 
+            image_y, 
+            width=image_size, 
+            height=image_size, 
+            preserveAspectRatio=True,
+            mask='auto'  # Автоматически использует альфа-канал для прозрачности
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось отобразить изображение натальной карты: {e}")
+
+
+def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optional[dict] = None) -> Optional[str]:
+    """
+    Формирование PDF из Markdown-текста с космическим оформлением.
+    chart_data параметр оставлен для обратной совместимости, но не используется для генерации диаграммы.
+    Вместо этого используется статичное изображение из images/natal_chart.png
+    """
+    try:
+        lines = (markdown_text or '').split('\n')
+        font_name = _register_reportlab_font()
 
         fd, temp_path = tempfile.mkstemp(suffix='.pdf')
         os.close(fd)
-        pdf.output(temp_path)
 
+        # Космические цвета
+        cosmic_text = HexColor('#e8e8f0')  # Светлый текст на тёмном фоне
+        cosmic_gold = HexColor('#ffd700')  # Золотой для заголовков
+        cosmic_silver = HexColor('#b0b0d0')  # Серебристый для подзаголовков
+        cosmic_accent = HexColor('#9b59b6')  # Фиолетовый акцент
+        
+        # Используем BaseDocTemplate для кастомного PageTemplate
+        width, height = A4
+        left_margin = 80  # Увеличены отступы слева
+        right_margin = 80  # Увеличены отступы справа
+        top_margin = 60
+        bottom_margin = 60
+        
+        doc = BaseDocTemplate(
+            temp_path,
+            pagesize=A4,
+            leftMargin=left_margin,
+            rightMargin=right_margin,
+            topMargin=top_margin,
+            bottomMargin=bottom_margin,
+            title=title or 'Натальная карта'
+        )
+        
+        # Создаём Frame для контента
+        frame = Frame(
+            left_margin,
+            bottom_margin,
+            width - left_margin - right_margin,
+            height - top_margin - bottom_margin,
+            leftPadding=0,
+            bottomPadding=0,
+            rightPadding=0,
+            topPadding=0,
+            id='cosmic_frame'
+        )
+        
+        # Переменная для отслеживания первой страницы
+        first_page_drawn = {'flag': False}
+        
+        # Универсальная функция для всех страниц (рисует статичное изображение только на первой)
+        def page_template_with_image(canvas, doc):
+            draw_cosmic_background(canvas, doc)
+            # Рисуем статичное изображение только на первой странице
+            if not first_page_drawn['flag']:
+                draw_static_natal_chart_image(canvas, doc)
+                first_page_drawn['flag'] = True
+        
+        # Создаём PageTemplate (всегда используем функцию с изображением, даже если chart_data нет)
+        cosmic_template = PageTemplate(
+            id='cosmic_page',
+            frames=[frame],
+            onPage=page_template_with_image
+        )
+        
+        doc.addPageTemplates([cosmic_template])
+
+        styles = getSampleStyleSheet()
+        
+        # Базовый стиль с космическим цветом текста и выравниванием по ширине
+        base_style = ParagraphStyle(
+            'Base',
+            parent=styles['Normal'],
+            fontName=font_name,
+            fontSize=16,
+            leading=24,
+            spaceAfter=8,
+            textColor=cosmic_text,
+            backColor=None,
+            alignment=4  # 4 = TA_JUSTIFY (выравнивание по ширине)
+        )
+        
+        # Заголовки с космическим оформлением
+        heading_styles = {
+            1: ParagraphStyle(
+                'H1', 
+                parent=base_style, 
+                fontSize=24, 
+                leading=30, 
+                spaceBefore=20, 
+                spaceAfter=12,
+                textColor=cosmic_gold,
+                fontName=font_name,
+                alignment=0  # 0 = TA_LEFT (по левому краю для заголовков)
+            ),
+            2: ParagraphStyle(
+                'H2', 
+                parent=base_style, 
+                fontSize=20, 
+                leading=26, 
+                spaceBefore=16, 
+                spaceAfter=10,
+                textColor=cosmic_gold,
+                fontName=font_name,
+                alignment=0  # По левому краю для заголовков
+            ),
+            3: ParagraphStyle(
+                'H3', 
+                parent=base_style, 
+                fontSize=17, 
+                leading=22, 
+                spaceBefore=14, 
+                spaceAfter=8,
+                textColor=cosmic_silver,
+                fontName=font_name,
+                alignment=0  # По левому краю для подзаголовков
+            ),
+        }
+        
+        # Стиль для заголовка документа (по центру)
+        title_style = ParagraphStyle(
+            'Title', 
+            parent=base_style, 
+            fontSize=28, 
+            leading=34, 
+            alignment=1,  # 1 = TA_CENTER (по центру)
+            spaceAfter=20,
+            textColor=cosmic_gold,
+            fontName=font_name
+        )
+
+        story = []
+        
+        # Заголовок документа с космическим оформлением
+        if title:
+            title_text = f"<b>✦ {_clean_inline_markdown(title)} ✦</b>"
+            story.append(Paragraph(title_text, title_style))
+            story.append(Spacer(1, 15))
+        
+        # Добавляем место для статичного изображения на первой странице (половина страницы)
+        # Проверяем, существует ли изображение
+        if os.path.exists(NATAL_CHART_IMAGE_PATH):
+            width, height = A4
+            image_size = min(width, height) / 2  # Половина страницы
+            story.append(Spacer(1, image_size + 20))  # Место для изображения + уменьшенный отступ
+        
+        story.append(Spacer(1, 10))
+        
+        # Обработка содержимого с космическим форматированием
+        for raw_line in lines:
+            line = raw_line.rstrip('\r')
+            if line.strip() == '[[PAGE_BREAK]]':
+                story.append(PageBreak())
+                continue
+            if not line.strip():
+                story.append(Spacer(1, 10))
+                continue
+
+            stripped = line.lstrip()
+            heading_level = 0
+            if stripped.startswith('#'):
+                heading_level = len(stripped) - len(stripped.lstrip('#'))
+                stripped = stripped.lstrip('#').strip()
+                
+                # Добавляем космические символы к заголовкам разделов
+                if heading_level == 1:
+                    stripped = f"✦ {stripped} ✦"
+
+            bullet = False
+            if stripped.startswith(('- ', '* ', '+ ')):
+                bullet = True
+                stripped = stripped[2:].strip()
+                # Космические символы для списков
+                bullet_char = "✦"
+
+            cleaned = _clean_inline_markdown(stripped)
+            if heading_level and heading_level in heading_styles:
+                story.append(Paragraph(cleaned, heading_styles[heading_level]))
+            elif bullet:
+                story.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
+            else:
+                story.append(Paragraph(cleaned, base_style))
+
+        if not story:
+            story.append(Paragraph("Данные недоступны.", base_style))
+
+        # Собираем документ (PageTemplate уже добавлен выше)
+        doc.build(story)
         return temp_path
-    except Exception as e:
-        logger.error(f"Ошибка при генерации PDF: {e}", exc_info=True)
+    except Exception as pdf_error:
+        logger.error(f"Ошибка при локальном формировании PDF: {pdf_error}", exc_info=True)
         return None
 
 
@@ -668,12 +1618,15 @@ async def natal_chart_start(query, context):
     
     await query.edit_message_text(
         "📜 *Создание натальной карты*\n\n"
+        "💡 Вы можете ввести данные любого человека для расчета натальной карты.\n\n"
         "Мне понадобятся следующие данные:\n"
-        "1️⃣ Ваше имя\n"
+        "1️⃣ Имя\n"
         "2️⃣ Дата рождения\n"
         "3️⃣ Время рождения\n"
         "4️⃣ Место рождения\n\n"
-        "Пожалуйста, начните с отправки вашего имени:",
+        "‼️ *Важно:* первым сообщением отправьте _только имя_ (без даты, времени и места).\n"
+        "После этого я по очереди попрошу остальные данные.\n\n"
+        "Пожалуйста, начните с отправки имени:",
         reply_markup=buttons,
         parse_mode='Markdown'
     )
@@ -758,6 +1711,14 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
         
+        # Логируем полное заполнение профиля
+        log_event(user_id, 'profile_complete', {
+            'birth_name': user_data.get('birth_name'),
+            'birth_date': user_data.get('birth_date'),
+            'birth_time': user_data.get('birth_time'),
+            'birth_place': user_data.get('birth_place')
+        })
+        
         await update.message.reply_text(
             "✅ *Профиль успешно сохранен!*\n\n"
             "Теперь вы можете получить свою натальную карту.",
@@ -779,7 +1740,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Имя успешно изменено!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("👤 Мой профиль", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
@@ -800,7 +1761,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Дата рождения успешно изменена!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("👤 Мой профиль", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
@@ -821,7 +1782,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Время рождения успешно изменено!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("👤 Мой профиль", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
@@ -842,80 +1803,665 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Место рождения успешно изменено!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("👤 Мой профиль", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
 
 
-def generate_natal_chart_with_gpt(birth_data, api_key):
-    """Генерация натальной карты с помощью OpenAI GPT"""
-    
+def get_coordinates_from_place(place_str: str) -> Tuple[Optional[float], Optional[float]]:
+    """Получение координат (широта, долгота) из названия места рождения."""
     try:
-        client = OpenAI(api_key=api_key)
-        
-        # Формируем промпт для GPT
-        prompt = f"""Создай натальную карту на основе следующих данных:
+        geolocator = Nominatim(user_agent="astral_bot")
+        location = geolocator.geocode(place_str, timeout=10)
+        if location:
+            return location.latitude, location.longitude
+        logger.warning(f"Не удалось найти координаты для места: {place_str}")
+        return None, None
+    except (GeocoderTimedOut, GeocoderServiceError) as e:
+        logger.error(f"Ошибка геокодирования: {e}")
+        return None, None
+    except Exception as e:
+        logger.error(f"Неожиданная ошибка при геокодировании: {e}")
+        return None, None
 
-Имя: {birth_data.get('name', 'Пользователь')}
-Дата рождения: {birth_data.get('date', 'Не указано')}
-Время рождения: {birth_data.get('time', 'Не указано')}
-Место рождения: {birth_data.get('place', 'Не указано')}
 
-Создай астрологическую натальную карту (максимум 1200-1500 слов), которая включает:
-1. Положение основных планет (Солнце, Луна, Меркурий, Венера, Марс, Юпитер, Сатурн) в знаках зодиака
-2. Асцендент и важные углы карты
-3. Краткое описание личности на основе положений планет
-4. Характерные черты и таланты
-5. Области жизни, требующие внимания
-6. Краткая астрологическая интерпретация основных аспектов
-
-ВАЖНО: 
-- Ответ должен быть ЛАКОНИЧНЫМ, структурированным и не превышать 1500 слов
-- Используй простой Markdown: **жирный текст** для заголовков, *курсив* для акцентов
-- ВСЕГДА закрывай все Markdown теги правильно (каждая * должна иметь пару, каждая _ должна иметь пару)
-- Используй эмодзи для разделения разделов
-- Пиши на русском языке
-- Избегай сложных Markdown конструкций, используй только ** и *
-"""
+def calculate_natal_chart(birth_data: dict) -> dict:
+    """
+    Расчет натальной карты через Swiss Ephemeris.
+    Возвращает словарь с данными о планетах, домах, узлах, аспектах.
+    """
+    try:
+        # Парсинг даты и времени
+        date_str = birth_data.get('date', '')
+        time_str = birth_data.get('time', '')
+        place_str = birth_data.get('place', '')
         
-        logger.info("Отправка запроса в OpenAI GPT для генерации натальной карты")
+        logger.info(f"Расчет натальной карты для: дата={date_str}, время={time_str}, место={place_str}")
         
-        response = client.chat.completions.create(
-            model="gpt-4.1",
-            messages=[
-                {"role": "system", "content": "Ты профессиональный астролог с глубокими знаниями натальной астрологии. Создаешь детальные и точные натальные карты. Ответ должен быть лаконичным, но информативным (максимум 1200-1500 слов)."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=1500,
-            temperature=0.7
-        )
+        if not date_str or not time_str or not place_str:
+            raise ValueError("Не указаны дата, время или место рождения")
         
-        natal_chart_text = response.choices[0].message.content
+        # Парсинг даты (формат: ДД.ММ.ГГГГ)
+        try:
+            day, month, year = map(int, date_str.split('.'))
+        except (ValueError, AttributeError) as e:
+            raise ValueError(f"Некорректный формат даты: {date_str}. Ожидается ДД.ММ.ГГГГ")
         
-        logger.info("Натальная карта успешно сгенерирована через OpenAI GPT")
+        # Парсинг времени (формат: ЧЧ:ММ)
+        try:
+            hour, minute = map(int, time_str.split(':'))
+        except (ValueError, AttributeError) as e:
+            raise ValueError(f"Некорректный формат времени: {time_str}. Ожидается ЧЧ:ММ")
         
-        # Добавляем заголовок, если его нет
-        if not natal_chart_text.startswith("📜"):
-            natal_chart_text = "📜 *Натальная карта*\n\n" + natal_chart_text
+        # Валидация даты
+        try:
+            test_date = datetime(year, month, day)
+        except ValueError as e:
+            raise ValueError(f"Некорректная дата: {day}.{month}.{year}")
         
-        return natal_chart_text
+        # Валидация времени
+        if not (0 <= hour <= 23) or not (0 <= minute <= 59):
+            raise ValueError(f"Некорректное время: {hour}:{minute}")
+        
+        # Получение координат места рождения
+        lat, lon = get_coordinates_from_place(place_str)
+        if lat is None or lon is None:
+            # Используем дефолтные координаты (Москва) если не удалось определить
+            logger.warning(f"Используются координаты по умолчанию для места: {place_str}")
+            lat, lon = 55.7558, 37.6173  # Москва
+        
+        logger.info(f"Координаты места рождения: широта={lat}, долгота={lon}")
+        
+        # Определение часового пояса по координатам
+        tf = TimezoneFinder()
+        try:
+            timezone_str = tf.timezone_at(lat=lat, lng=lon)
+            if timezone_str:
+                tz = pytz.timezone(timezone_str)
+                logger.info(f"Часовой пояс места рождения: {timezone_str}")
+            else:
+                # Если не удалось определить, используем UTC
+                logger.warning(f"Не удалось определить часовой пояс для {lat}, {lon}, используется UTC")
+                tz = pytz.UTC
+        except Exception as e:
+            logger.warning(f"Ошибка определения часового пояса: {e}, используется UTC")
+            tz = pytz.UTC
+        
+        # Создание datetime объекта в локальном времени места рождения
+        local_dt = tz.localize(datetime(year, month, day, hour, minute))
+        
+        # Конвертация в UTC (Swiss Ephemeris работает с UTC)
+        utc_dt = local_dt.astimezone(pytz.UTC)
+        
+        logger.info(f"Локальное время: {local_dt}, UTC: {utc_dt}")
+        
+        # Расчет юлианской даты в UTC
+        # Вариант А (правильный): передаём час сразу в swe.julday
+        hour_decimal = utc_dt.hour + utc_dt.minute / 60.0 + utc_dt.second / 3600.0
+        jd = swe.julday(utc_dt.year, utc_dt.month, utc_dt.day, hour_decimal, swe.GREG_CAL)
+        
+        logger.info(f"Юлианская дата (UTC): {jd}")
+        
+        # Константы планет в Swiss Ephemeris
+        PLANETS = {
+            'Sun': swe.SUN,
+            'Moon': swe.MOON,
+            'Mercury': swe.MERCURY,
+            'Venus': swe.VENUS,
+            'Mars': swe.MARS,
+            'Jupiter': swe.JUPITER,
+            'Saturn': swe.SATURN,
+            'Uranus': swe.URANUS,
+            'Neptune': swe.NEPTUNE,
+            'Pluto': swe.PLUTO,
+        }
+        
+        # Расчет положений планет
+        planets_data = {}
+        retrograde_planets = []
+        
+        for planet_name, planet_id in PLANETS.items():
+            # Расчет положения планеты
+            result = swe.calc_ut(jd, planet_id, swe.FLG_SWIEPH | swe.FLG_SPEED)
+            # В Swiss Ephemeris result[0] - это ТУПЛЬ с данными, result[1] - код возврата
+            # Проверяем наличие данных в result[0]
+            if len(result) >= 2 and result[0] is not None and len(result[0]) >= 4:
+                longitude = result[0][0]  # Долгота в градусах
+                latitude = result[0][1]   # Широта в градусах
+                distance = result[0][2]   # Расстояние
+                speed = result[0][3]      # Скорость (отрицательная = ретроградность)
+                
+                # Нормализуем долготу в диапазон 0-360
+                longitude = longitude % 360
+                
+                # Определение знака зодиака (0-11: Овен-Рыбы)
+                sign_num = int(longitude / 30) % 12
+                sign_degrees = longitude % 30
+                
+                signs = ['Овен', 'Телец', 'Близнецы', 'Рак', 'Лев', 'Дева',
+                        'Весы', 'Скорпион', 'Стрелец', 'Козерог', 'Водолей', 'Рыбы']
+                
+                is_retrograde = speed < 0
+                if is_retrograde:
+                    retrograde_planets.append(planet_name)
+                
+                planets_data[planet_name] = {
+                    'longitude': longitude,
+                    'latitude': latitude,
+                    'distance': distance,
+                    'speed': speed,
+                    'sign': signs[sign_num],
+                    'sign_degrees': sign_degrees,
+                    'is_retrograde': is_retrograde,
+                }
+                logger.info(f"{planet_name}: {signs[sign_num]} {sign_degrees:.2f}° (долгота: {longitude:.2f}°), ретроградность: {is_retrograde}")
+            else:
+                logger.error(f"Ошибка расчета для планеты {planet_name}: некорректные данные в result = {result}")
+        
+        # Расчет Лунных узлов
+        node_result = swe.calc_ut(jd, swe.TRUE_NODE, swe.FLG_SWIEPH)
+        # В Swiss Ephemeris result[0] - это ТУПЛЬ с данными, result[1] - код возврата
+        if len(node_result) >= 2 and node_result[0] is not None and len(node_result[0]) >= 1:
+            north_node_longitude = node_result[0][0] % 360  # Нормализуем в 0-360
+        else:
+            logger.error(f"Ошибка расчета лунных узлов: некорректные данные в result = {node_result}")
+            north_node_longitude = 0
+        north_node_sign_num = int(north_node_longitude / 30) % 12
+        north_node_sign_degrees = north_node_longitude % 30
+        
+        south_node_longitude = (north_node_longitude + 180) % 360
+        south_node_sign_num = int(south_node_longitude / 30)
+        south_node_sign_degrees = south_node_longitude % 30
+        
+        signs = ['Овен', 'Телец', 'Близнецы', 'Рак', 'Лев', 'Дева',
+                'Весы', 'Скорпион', 'Стрелец', 'Козерог', 'Водолей', 'Рыбы']
+        
+        # Расчет домов по системе Placidus
+        houses_result = swe.houses(jd, lat, lon, b'P')  # 'P' = Placidus
+        # В Swiss Ephemeris result[0] - это тупль с куспидами домов (12 элементов для домов 1-12)
+        # result[1] - это тупль с ASC/MC и другими данными
+        if len(houses_result) >= 2 and houses_result[0] is not None and houses_result[1] is not None:
+            houses_cusps_tuple = houses_result[0]  # Тупль с 12 куспидами домов (1-12)
+            ascmc = houses_result[1]  # Тупль: ascmc[0] = ASC, ascmc[1] = MC
+            # Преобразуем тупль в список для удобства индексирования
+            houses_cusps = [0] * 13  # Массив из 13 элементов (индекс 0 не используется)
+            for i in range(min(12, len(houses_cusps_tuple))):
+                houses_cusps[i+1] = houses_cusps_tuple[i] % 360  # Дома 1-12
+            
+            houses_asc = ascmc[0] % 360 if len(ascmc) > 0 else 0  # Асцендент, нормализуем в 0-360
+            houses_mc = ascmc[1] % 360 if len(ascmc) > 1 else 0   # MC (Medium Coeli)
+            houses_ic = (houses_mc + 180) % 360  # IC (Imum Coeli)
+            logger.info(f"Дома рассчитаны: ASC={houses_asc:.2f}°, MC={houses_mc:.2f}°, IC={houses_ic:.2f}°")
+        else:
+            logger.error(f"Ошибка расчета домов: некорректные данные в result = {houses_result}")
+            houses_cusps = [0] * 13
+            houses_asc = 0
+            houses_mc = 0
+            houses_ic = 0
+        
+        # Определение знаков для куспидов домов
+        houses_data = {}
+        for i in range(1, 13):  # Дома 1-12, индексы в массиве 1-12
+            cusp_longitude = houses_cusps[i]
+            sign_num = int(cusp_longitude / 30)
+            sign_degrees = cusp_longitude % 30
+            houses_data[f'House{i}'] = {
+                'longitude': cusp_longitude,
+                'sign': signs[sign_num],
+                'sign_degrees': sign_degrees,
+            }
+        
+        # Определение знаков для ASC, MC, IC
+        asc_sign_num = int(houses_asc / 30)
+        mc_sign_num = int(houses_mc / 30)
+        ic_sign_num = int(houses_ic / 30)
+        
+        # Расчет аспектов между планетами
+        aspects_data = []
+        planet_list = list(PLANETS.items())
+        
+        for i, (p1_name, p1_id) in enumerate(planet_list):
+            if p1_name not in planets_data:
+                continue
+            p1_long = planets_data[p1_name]['longitude']
+            
+            for j, (p2_name, p2_id) in enumerate(planet_list[i+1:], start=i+1):
+                if p2_name not in planets_data:
+                    continue
+                p2_long = planets_data[p2_name]['longitude']
+                
+                # Расчет угла между планетами
+                angle = abs(p1_long - p2_long)
+                if angle > 180:
+                    angle = 360 - angle
+                
+                # Определение аспекта
+                aspect_name = None
+                orb = None
+                
+                # Соединение (±6°)
+                if angle <= 6 or angle >= 354:
+                    aspect_name = "Соединение"
+                    orb = min(angle, 360 - angle)
+                # Оппозиция (±5°)
+                elif 175 <= angle <= 185:
+                    aspect_name = "Оппозиция"
+                    orb = abs(angle - 180)
+                # Квадрат (±5°)
+                elif 85 <= angle <= 95:
+                    aspect_name = "Квадрат"
+                    orb = abs(angle - 90)
+                elif 265 <= angle <= 275:
+                    aspect_name = "Квадрат"
+                    orb = abs(angle - 270)
+                # Трин (±4°)
+                elif 116 <= angle <= 124:
+                    aspect_name = "Трин"
+                    orb = abs(angle - 120)
+                elif 236 <= angle <= 244:
+                    aspect_name = "Трин"
+                    orb = abs(angle - 240)
+                # Секстиль (±4°)
+                elif 56 <= angle <= 64:
+                    aspect_name = "Секстиль"
+                    orb = abs(angle - 60)
+                elif 296 <= angle <= 304:
+                    aspect_name = "Секстиль"
+                    orb = abs(angle - 300)
+                
+                if aspect_name:
+                    aspects_data.append({
+                        'planet1': p1_name,
+                        'planet2': p2_name,
+                        'aspect': aspect_name,
+                        'angle': angle,
+                        'orb': orb,
+                    })
+        
+        # Определение планет в домах
+        # Стандарт Swiss/Placidus: Cusp_n ≤ Planet < Cusp_(n+1) → планета в доме N
+        # Планета принадлежит дому, если её долгота между куспидом текущего и следующего дома
+        planets_in_houses = {}
+        for planet_name, planet_info in planets_data.items():
+            planet_long = planet_info['longitude']
+            # Проверяем каждый дом
+            for house_num in range(1, 13):
+                cusp_current = houses_cusps[house_num]
+                # Следующий дом (с учётом цикличности)
+                next_house_num = (house_num % 12) + 1
+                cusp_next = houses_cusps[next_house_num]
+                
+                # Проверка: Cusp_n ≤ Planet < Cusp_(n+1)
+                if cusp_current <= cusp_next:
+                    # Обычный случай: куспиды не переходят через 0°
+                    if cusp_current <= planet_long < cusp_next:
+                        planets_in_houses[planet_name] = house_num
+                        break
+                else:
+                    # Переход через 0° (wrap-around): дом 12→1
+                    if planet_long >= cusp_current or planet_long < cusp_next:
+                        planets_in_houses[planet_name] = house_num
+                        break
+        
+        return {
+            'planets': planets_data,
+            'houses': houses_data,
+            'ascendant': {
+                'longitude': houses_asc,
+                'sign': signs[asc_sign_num],
+                'sign_degrees': houses_asc % 30,
+            },
+            'mc': {
+                'longitude': houses_mc,
+                'sign': signs[mc_sign_num],
+                'sign_degrees': houses_mc % 30,
+            },
+            'ic': {
+                'longitude': houses_ic,
+                'sign': signs[ic_sign_num],
+                'sign_degrees': houses_ic % 30,
+            },
+            'north_node': {
+                'longitude': north_node_longitude,
+                'sign': signs[north_node_sign_num],
+                'sign_degrees': north_node_sign_degrees,
+            },
+            'south_node': {
+                'longitude': south_node_longitude,
+                'sign': signs[south_node_sign_num],
+                'sign_degrees': south_node_sign_degrees,
+            },
+            'retrograde_planets': retrograde_planets,
+            'aspects': aspects_data,
+            'planets_in_houses': planets_in_houses,
+        }
         
     except Exception as e:
-        logger.error(f"Ошибка при вызове OpenAI API: {e}")
-        # Возвращаем базовую натальную карту при ошибке API
-        return """📜 *Натальная карта*
+        logger.error(f"Ошибка при расчете натальной карты: {e}", exc_info=True)
+        raise
 
-*Астрологический профиль:*
 
-На основе предоставленных данных создана персональная натальная карта.
+def format_natal_chart_data(chart_data: dict) -> str:
+    """
+    Форматирование данных натальной карты в текстовый формат для передачи в промпт.
+    """
+    lines = []
+    
+    lines.append("=== ТОЧНЫЕ АСТРОЛОГИЧЕСКИЕ ДАННЫЕ (Swiss Ephemeris, Placidus, Тропический зодиак) ===")
+    lines.append("ВСЕ УКАЗАННЫЕ НИЖЕ ДАННЫЕ РАССЧИТАНЫ АВТОМАТИЧЕСКИ И ЯВЛЯЮТСЯ ТОЧНЫМИ.")
+    lines.append("ИСПОЛЬЗУЙ ТОЛЬКО ЭТИ ДАННЫЕ ДЛЯ ИНТЕРПРЕТАЦИИ. НЕ ПРИДУМЫВАЙ И НЕ ИЗМЕНЯЙ ИХ.\n")
+    
+    # Планеты
+    lines.append("ПОЛОЖЕНИЕ ЛИЧНЫХ ПЛАНЕТ:")
+    planet_ru = {
+        'Sun': 'Солнце',
+        'Moon': 'Луна',
+        'Mercury': 'Меркурий',
+        'Venus': 'Венера',
+        'Mars': 'Марс',
+        'Jupiter': 'Юпитер',
+        'Saturn': 'Сатурн',
+        'Uranus': 'Уран',
+        'Neptune': 'Нептун',
+        'Pluto': 'Плутон',
+    }
+    
+    personal_planets = ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars']
+    for planet_name in personal_planets:
+        if planet_name in chart_data['planets']:
+            planet_info = chart_data['planets'][planet_name]
+            planet_name_ru = planet_ru.get(planet_name, planet_name)
+            retrograde = " (R)" if planet_info['is_retrograde'] else ""
+            lines.append(
+                f"  {planet_name_ru}: {planet_info['sign']} {planet_info['sign_degrees']:.1f}°{retrograde}"
+            )
+    
+    lines.append("\nПОЛОЖЕНИЕ СОЦИАЛЬНЫХ ПЛАНЕТ:")
+    social_planets = ['Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto']
+    for planet_name in social_planets:
+        if planet_name in chart_data['planets']:
+            planet_info = chart_data['planets'][planet_name]
+            planet_name_ru = planet_ru.get(planet_name, planet_name)
+            retrograde = " (R)" if planet_info['is_retrograde'] else ""
+            lines.append(
+                f"  {planet_name_ru}: {planet_info['sign']} {planet_info['sign_degrees']:.1f}°{retrograde}"
+            )
+    
+    # Ретроградные планеты
+    if chart_data['retrograde_planets']:
+        retro_list = [planet_ru.get(p, p) for p in chart_data['retrograde_planets']]
+        lines.append(f"\nРЕТРОГРАДНЫЕ ПЛАНЕТЫ НА МОМЕНТ РОЖДЕНИЯ:")
+        for retro_planet in chart_data['retrograde_planets']:
+            lines.append(f"  • {planet_ru.get(retro_planet, retro_planet)}")
+    else:
+        lines.append("\nРЕТРОГРАДНЫЕ ПЛАНЕТЫ НА МОМЕНТ РОЖДЕНИЯ: нет")
+    
+    # Угловые точки (важно показать первыми)
+    lines.append("\nУГЛОВЫЕ ТОЧКИ КАРТЫ:")
+    lines.append(f"  АСЦЕНДЕНТ (ASC): {chart_data['ascendant']['sign']} "
+                 f"{chart_data['ascendant']['sign_degrees']:.1f}°")
+    lines.append(f"  MC (Середина неба): {chart_data['mc']['sign']} "
+                 f"{chart_data['mc']['sign_degrees']:.1f}°")
+    lines.append(f"  IC (Глубина неба): {chart_data['ic']['sign']} "
+                 f"{chart_data['ic']['sign_degrees']:.1f}°")
+    lines.append(f"  DSC (Десцендент): {chart_data['ascendant']['sign']} "
+                 f"{(chart_data['ascendant']['sign_degrees'] + 180) % 360:.1f}°")
+    
+    # Дома
+    lines.append("\nКУСПИДЫ ДОМОВ (система Placidus):")
+    for house_num in range(1, 13):
+        house_key = f'House{house_num}'
+        if house_key in chart_data['houses']:
+            house_info = chart_data['houses'][house_key]
+            lines.append(
+                f"  Дом {house_num:2d}: {house_info['sign']} {house_info['sign_degrees']:.1f}°"
+            )
+    
+    # Планеты в домах
+    lines.append("\nПЛАНЕТЫ В ДОМАХ (важно для интерпретации):")
+    for planet_name in ['Sun', 'Moon', 'Mercury', 'Venus', 'Mars', 'Jupiter', 'Saturn', 'Uranus', 'Neptune', 'Pluto']:
+        if planet_name in chart_data['planets_in_houses']:
+            house_num = chart_data['planets_in_houses'][planet_name]
+            lines.append(f"  {planet_ru.get(planet_name, planet_name)}: Дом {house_num}")
+    
+    # Лунные узлы
+    lines.append(f"\nЛУННЫЕ УЗЛЫ:")
+    lines.append(f"  Северный узел (Раху): {chart_data['north_node']['sign']} "
+                 f"{chart_data['north_node']['sign_degrees']:.1f}°")
+    lines.append(f"  Южный узел (Кету): {chart_data['south_node']['sign']} "
+                 f"{chart_data['south_node']['sign_degrees']:.1f}°")
+    
+    # Аспекты
+    lines.append("\nГЛАВНЫЕ АСПЕКТЫ МЕЖДУ ПЛАНЕТАМИ (узкие орбисы):")
+    if chart_data['aspects']:
+        for aspect in chart_data['aspects']:
+            p1_ru = planet_ru.get(aspect['planet1'], aspect['planet1'])
+            p2_ru = planet_ru.get(aspect['planet2'], aspect['planet2'])
+            lines.append(
+                f"  {p1_ru} {aspect['aspect']} {p2_ru} (орбис {aspect['orb']:.1f}°)"
+            )
+    else:
+        lines.append("  Нет значимых аспектов в указанных орбисах")
+    
+    lines.append("\n" + "=" * 70)
+    lines.append("ИНСТРУКЦИЯ: Используй ВСЕ указанные выше данные для анализа.")
+    lines.append("НЕ придумывай новые позиции планет или аспекты.")
+    lines.append("Опирайся ТОЛЬКО на эти точные расчёты Swiss Ephemeris.")
+    lines.append("=" * 70)
+    
+    return "\n".join(lines)
 
-*Важные элементы:*
-• Солнце определяет вашу сущность
-• Луна показывает вашу эмоциональную природу
-• Асцендент - ваш образ в глазах окружающих
 
-*Примечание:* Для более детального анализа рекомендуется консультация с профессиональным астрологом."""
+def generate_natal_chart_with_gpt(birth_data, api_key):
+    """Генерация натальной карты с помощью OpenAI GPT и преобразование текста в PDF."""
+
+    # Увеличенный таймаут на случай длинных ответов
+    client = OpenAI(api_key=api_key, timeout=180)
+    
+    # Расчет натальной карты через Swiss Ephemeris
+    try:
+        chart_data = calculate_natal_chart(birth_data)
+        chart_data_text = format_natal_chart_data(chart_data)
+        logger.info("Натальная карта успешно рассчитана через Swiss Ephemeris")
+        # Логируем первые 1000 символов данных для отладки
+        preview = chart_data_text[:1000] + "..." if len(chart_data_text) > 1000 else chart_data_text
+        logger.info(f"Данные натальной карты (первые 1000 символов):\n{preview}")
+    except Exception as e:
+        logger.error(f"Ошибка при расчете натальной карты: {e}", exc_info=True)
+        chart_data_text = "Ошибка расчета натальной карты. Используются базовые данные."
+
+    # Разнесённая генерация по группам разделов для стабильности
+    try:
+        def _build_common_preamble() -> str:
+            return (
+                "- Составь подробный астрологический отчет по натальной карте по системе Placidus.\n"
+                "- Используй Классическую астрологию (узкие орбисы): соединения ±6°, оппозиции/квадраты ±5°, трины/секстили ±4°.\n"
+                "- Не добавляй никаких вступлений, пояснений, выводов, заголовков вроде “введение”, “итог”, “анализ” или обращений к читателю.\n"
+                "- один непрерывный документ целиком\n"
+                "- Выводи только структурированный отчёт с разделами из указанного диапазона, без лишнего текста и комментариев.\n\n"
+                "Мои данные:\n"
+                f"Имя: {birth_data.get('name', 'Не указано')}\n"
+                f"Дата рождения: {birth_data.get('date', 'Не указано')}\n"
+                f"Время рождения: {birth_data.get('time', 'Не указано')}\n"
+                f"Место рождения: {birth_data.get('place', 'Не указано')}\n\n"
+                f"{chart_data_text}\n\n"
+                "ВАЖНО: Используй ТОЛЬКО указанные выше данные натальной карты для интерпретации. "
+                "Не выдумывай положения планет, домов, узлов или аспектов. "
+                "Все астрономические данные уже рассчитаны и предоставлены выше.\n"
+            )
+
+        def _sections_prompt(range_note: str, structure_lines: str) -> str:
+            return f"{_build_common_preamble()}\nСгенерируй ТОЛЬКО разделы {range_note}:\n{structure_lines}\n"
+
+        def _call_openai_with_retry(messages, token_attempts=(10000,), use_stream: bool = True) -> str:
+            last_err = None
+            for max_t in token_attempts:
+                try:
+                    if use_stream:
+                        stream = client.chat.completions.create(
+                            model="gpt-4.1",
+                            messages=messages,
+                            max_tokens=max_t,
+                            temperature=0.4,
+                            stream=True
+                        )
+                        collected = []
+                        for event in stream:
+                            try:
+                                delta = event.choices[0].delta  # type: ignore[attr-defined]
+                                piece = getattr(delta, "content", None)
+                                if piece:
+                                    collected.append(piece)
+                            except Exception:
+                                # На случай нестандартного события (finish_reason и т.п.)
+                                continue
+                        content = ("".join(collected)).strip()
+                        if content:
+                            return content
+                    else:
+                        resp = client.chat.completions.create(
+                            model="gpt-4.1",
+                            messages=messages,
+                            max_tokens=max_t,
+                            temperature=0.4
+                        )
+                        content = (resp.choices[0].message.content or "").strip()
+                        if content:
+                            return content
+                except Exception as e:
+                    last_err = e
+                    logger.warning(f"OpenAI ошибка (max_tokens={max_t}): {e}; повтор...")
+                    time.sleep(1.0)
+            raise last_err or RuntimeError("Не удалось получить ответ от OpenAI")
+
+        example_from_file = load_prompt_example()
+        example_sections = _split_example_by_sections(example_from_file) if example_from_file else {}
+        system_base = [
+            {"role": "system", "content": "Ты профессиональный астролог и пишешь структурированные отчёты на русском языке."}
+        ]
+
+        # Генерация каждого раздела отдельным запросом
+        section_specs = {
+            1: "- Раздел 1 (не менее 4 000 символов): Опиши особенности личности на основе Солнца и Луны",
+            2: "- Раздел 2 (не менее 2 000 символов): Опиши как человека видят другие люди на основе асцендента",
+            3: "- Раздел 3 (не менее 7 000 символов): Опиши сильные стороны (как они проявляются, как можно их усилить; упомяни планеты, дома, аспекты) и слабые стороны (как они проявляются, как можно их исправить; упомяни планеты, дома, аспекты)",
+            4: "- Раздел 4 (не менее 3 000 символов): Сфера карьеры и финансов (врожденные таланты; подходящие профессии; сильные стороны на работе и как нужно проявляться, чтобы достигать успех; способ реализации: найм, фриланс, бизнес; финансовая стратегия: копить или тратить; как поднять самооценку и обрести внутреннюю опору; где брать энергию и как мотивировать себя; упомяни планеты, дома, аспекты)",
+            5: "- Раздел 5 (не менее 3 000 символов): Сфера романтических отношений (Типаж идеального партнера, который нравится; типаж идеального партнера, с которым получится построить отношения; какие могут быть трудности в отношениях и что делать с трудностями; упомяни планеты, дома, аспекты)",
+            6: "- Раздел 6 (не менее 2 000 символов): Физическая активность и спорт (какой вид физической активности подходит по Марсу; как нужно следить за здоровьем физическим и ментальным; упомяни планеты, дома, аспекты)",
+            7: "- Раздел 7 (не менее 1 000 символов): Опиши предназначение на эту жизнь в соответствии с Северным и Южным Лунными Узлами",
+        }
+
+        parts = []  # каждый элемент — уже со своим заголовком и, при необходимости, с разрывом страницы
+        static_titles = {
+            1: "Особенности личности на основе Солнца и Луны",
+            2: "Как человека видят другие люди на основе асцендента",
+            3: "Сильные и слабые стороны",
+            4: "Сфера карьеры и финансов",
+            5: "Сфера романтических отношений",
+            6: "Сфера физической активности и спорта",
+            7: "Предназначение на эту жизнь в соответствии с Северным и Южным Лунными Узлами",
+        }
+        for i in range(1, 8):
+            # Для каждого раздела берём соответствующий пример, если есть
+            sys_msgs = list(system_base)
+            example_key = str(i)
+            if example_key in example_sections:
+                sys_msgs.append({"role": "system", "content": f"Пример для ориентира (только стиль, Раздел {i}):\n{example_sections[example_key]}"})
+            # Формируем точечный промпт на раздел
+            user_prompt = (
+                _build_common_preamble() + 
+                f"\nСгенерируй ТОЛЬКО Раздел {i}:\n{section_specs[i]}\n"
+            )
+            messages = sys_msgs + [{"role": "user", "content": user_prompt}]
+            # Логируем промпт для первого раздела (чтобы не спамить логами)
+            if i == 1:
+                logger.info("=" * 80)
+                logger.info("ПОЛНЫЙ ПРОМПТ ДЛЯ OPENAI (Раздел 1):")
+                logger.info("=" * 80)
+                logger.info(user_prompt)
+                logger.info("=" * 80)
+            section_text = _call_openai_with_retry(messages)
+            section_text = section_text.strip()
+            if not section_text:
+                section_text = "Секция недоступна."
+            else:
+                # Убираем возможный дублирующий заголовок в начале тела раздела:
+                # - строки вида "Раздел N: ...", "Раздел N." и т.п.
+                # - строки, повторяющие статичный заголовок или его основную часть
+                import re
+                lines = section_text.splitlines()
+                cleaned_lines = []
+                skipped_header = False
+                static_title = static_titles.get(i, "").strip().lower()
+                core_title = static_title.split("(")[0].strip() if static_title else ""
+                for line in lines:
+                    stripped = line.strip()
+                    lower = stripped.lower().lstrip("#").strip()
+                    if not skipped_header and stripped:
+                        is_section_line = re.match(r"^раздел\s+\d+[:\. ]", lower)
+                        matches_title = False
+                        if core_title:
+                            matches_title = (
+                                lower.startswith(core_title)
+                                or core_title.startswith(lower)
+                                or core_title in lower
+                                or lower in core_title
+                            )
+                        if is_section_line or matches_title:
+                            skipped_header = True
+                            continue
+                    cleaned_lines.append(line)
+                section_text = "\n".join(cleaned_lines).strip() or section_text
+            # Статичный заголовок: "Раздел N: <фиксированное название>"
+            header_title = static_titles.get(i, "").strip()
+            header = f"## Раздел {i}: {header_title}" if header_title else f"## Раздел {i}"
+            block = f"{header}\n\n{section_text}"
+            parts.append(block)
+
+        # Склейка итогового Markdown по порядку разделов с разрывами страниц
+        markdown_text = ("\n\n[[PAGE_BREAK]]\n\n").join(parts).strip()
+
+        pdf_title = f"Натальная карта: {birth_data.get('name', 'Пользователь')}"
+        # Передаём chart_data для отображения диаграммы на первой странице
+        pdf_path = generate_pdf_from_markdown(markdown_text, pdf_title, chart_data)
+
+        if not pdf_path:
+            raise ValueError("Не удалось сформировать PDF из Markdown")
+
+        summary_section = _extract_summary(markdown_text) or markdown_text
+        summary_clean = _clean_inline_markdown(summary_section)
+        summary_text = summary_clean.strip()
+        if summary_text:
+            summary_text = "Краткое резюме:\n" + summary_text
+        if len(summary_text) > 920:
+            summary_text = summary_text[:920].rsplit(' ', 1)[0] + '…'
+
+        if not summary_text:
+            summary_text = "Краткое резюме недоступно. Подробности в PDF-файле."
+
+        logger.info("Натальная карта успешно сгенерирована через OpenAI GPT и сконвертирована в PDF")
+
+        return pdf_path, summary_text
+
+    except Exception as error:
+        logger.error(f"Ошибка при генерации натальной карты через GPT: {error}", exc_info=True)
+
+        fallback_text = "Карта временно недоступна. Попробуйте повторить запрос позже."
+        # Пытаемся получить chart_data для fallback PDF
+        fallback_chart_data = None
+        try:
+            fallback_chart_data = calculate_natal_chart(birth_data)
+        except Exception as e:
+            logger.warning(f"Не удалось получить chart_data для fallback PDF: {e}")
+        
+        fallback_pdf = generate_pdf_from_markdown(
+            fallback_text,
+            f"Натальная карта: {birth_data.get('name', 'Пользователь')}",
+            fallback_chart_data
+        )
+
+        return fallback_pdf, fallback_text
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -926,6 +2472,54 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "👋 Используйте кнопки меню для навигации или отправьте команду /help для справки."
         )
+
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    user_id = query.from_user.id
+    
+    try:
+        if not query.invoice_payload.startswith('natal_chart:'):
+            log_event(user_id, 'payment_error', {'error': 'invalid_payload', 'payload': query.invoice_payload})
+            await query.answer(ok=False, error_message='Некорректный платежный запрос')
+            return
+        
+        # Логируем предварительную проверку оплаты
+        log_event(user_id, 'payment_precheckout', {
+            'invoice_payload': query.invoice_payload,
+            'total_amount': query.total_amount,
+            'currency': query.currency
+        })
+        
+        await query.answer(ok=True)
+    except Exception as error:
+        logger.error(f"Ошибка при подтверждении оплаты: {error}", exc_info=True)
+        log_event(user_id, 'payment_error', {'error': str(error), 'stage': 'precheckout'})
+        await query.answer(ok=False, error_message='Ошибка при обработке платежа')
+
+
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    user_id = message.from_user.id
+    payment = message.successful_payment
+    
+    # Логируем успешную оплату
+    log_event(user_id, 'payment_success', {
+        'invoice_payload': payment.invoice_payload,
+        'total_amount': payment.total_amount,
+        'currency': payment.currency,
+        'provider_payment_charge_id': payment.provider_payment_charge_id
+    })
+    
+    mark_user_paid(user_id)
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart')],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
+    ])
+    await message.reply_text(
+        "✅ Оплата получена! Нажмите «📜 Натальная карта», чтобы сформировать отчёт.",
+        reply_markup=keyboard
+    )
 
 
 def main():
@@ -939,10 +2533,15 @@ def main():
     # Создаем приложение
     application = Application.builder().token(TOKEN).build()
     
+    # Логирование событий теперь происходит внутри самих обработчиков,
+    # чтобы не блокировать обработку команд и callback queries
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     
     # Задержка перед запуском для предотвращения конфликтов при одновременном старте нескольких инстансов
     time.sleep(2)
