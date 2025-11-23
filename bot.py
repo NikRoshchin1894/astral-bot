@@ -619,13 +619,27 @@ async def handle_planets_request(query, context):
     profile = load_user_profile(user_id)
     
     # Проверяем наличие всех необходимых данных
-    if not profile or not all([
+    has_profile = profile and all([
         profile.get('birth_name'), 
         profile.get('birth_date'), 
         profile.get('birth_time'), 
         profile.get('birth_place')
-    ]):
-        await query.answer("❌ Сначала заполните данные в разделе '📋 Данные о рождении'", show_alert=True)
+    ])
+    
+    if not has_profile:
+        # Логируем попытку запроса без профиля
+        log_event(user_id, 'planets_data_request_no_profile', {})
+        await query.edit_message_text(
+            "❌ *Данные не заполнены*\n\n"
+            "Для получения данных о положении планет необходимо заполнить данные о рождении.\n\n"
+            "💡 Вы можете ввести данные любого человека.\n\n"
+            "Нажмите кнопку ниже, чтобы заполнить данные:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("➕ Заполнить данные", callback_data='edit_profile'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            ]]),
+            parse_mode='Markdown'
+        )
         return
     
     try:
