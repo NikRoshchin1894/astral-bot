@@ -53,6 +53,13 @@ from timezonefinder import TimezoneFinder
 # Загружаем переменные окружения
 load_dotenv()
 
+# Настройка логирования (должно быть до использования logger)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
 # База данных
 # Используем PostgreSQL на Railway, SQLite локально
 DATABASE_URL = os.getenv('DATABASE_URL')
@@ -65,6 +72,7 @@ def get_db_connection():
         # Railway предоставляет DATABASE_URL в формате: postgresql://user:password@host:port/dbname
         try:
             result = urlparse(DATABASE_URL)
+            logger.info(f"Подключение к PostgreSQL: {result.hostname}:{result.port}/{result.path[1:]}")
             conn = psycopg2.connect(
                 database=result.path[1:],  # Убираем первый слэш
                 user=result.username,
@@ -72,12 +80,14 @@ def get_db_connection():
                 host=result.hostname,
                 port=result.port
             )
+            logger.info("✅ Подключение к PostgreSQL установлено")
             return conn, 'postgresql'
         except Exception as e:
-            logger.error(f"Ошибка подключения к PostgreSQL: {e}, используем SQLite")
+            logger.error(f"❌ Ошибка подключения к PostgreSQL: {e}, используем SQLite", exc_info=True)
             return sqlite3.connect(DATABASE), 'sqlite'
     else:
         # Используем SQLite локально
+        logger.info("DATABASE_URL не установлена, используем SQLite")
         return sqlite3.connect(DATABASE), 'sqlite'
 
 # Настройка логирования
@@ -171,56 +181,58 @@ def _split_example_by_sections(example_text: str) -> dict:
 
 def init_db():
     """Инициализация базы данных"""
-    conn, db_type = get_db_connection()
-    cursor = conn.cursor()
-    
-    if db_type == 'postgresql':
-        # PostgreSQL схемы
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                first_name TEXT,
-                last_name TEXT,
-                country TEXT,
-                city TEXT,
-                birth_date TEXT,
-                birth_time TEXT,
-                updated_at TEXT,
-                has_paid INTEGER DEFAULT 0,
-                birth_place TEXT
-            )
-        ''')
+    try:
+        conn, db_type = get_db_connection()
+        logger.info(f"Подключение к БД установлено: {db_type}")
+        cursor = conn.cursor()
         
-        # Проверяем и добавляем birth_place если его нет
-        try:
-            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='birth_place'")
-            if not cursor.fetchone():
-                cursor.execute('ALTER TABLE users ADD COLUMN birth_place TEXT')
-        except Exception as e:
-            logger.warning(f"Ошибка при проверке столбца birth_place: {e}")
-        
-        # Проверяем и добавляем has_paid если его нет
-        try:
-            cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='has_paid'")
-            if not cursor.fetchone():
-                cursor.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
-        except Exception as e:
-            logger.warning(f"Ошибка при проверке столбца has_paid: {e}")
-        
-        # Таблица для аналитики событий
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS events (
-                id SERIAL PRIMARY KEY,
-                user_id BIGINT,
-                event_type TEXT NOT NULL,
-                event_data TEXT,
-                timestamp TEXT NOT NULL,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-        ''')
-    else:
-        # SQLite схемы
-        cursor.execute('''
+        if db_type == 'postgresql':
+            # PostgreSQL схемы
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id BIGINT PRIMARY KEY,
+                    first_name TEXT,
+                    last_name TEXT,
+                    country TEXT,
+                    city TEXT,
+                    birth_date TEXT,
+                    birth_time TEXT,
+                    updated_at TEXT,
+                    has_paid INTEGER DEFAULT 0,
+                    birth_place TEXT
+                )
+            ''')
+            
+            # Проверяем и добавляем birth_place если его нет
+            try:
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='birth_place'")
+                if not cursor.fetchone():
+                    cursor.execute('ALTER TABLE users ADD COLUMN birth_place TEXT')
+            except Exception as e:
+                logger.warning(f"Ошибка при проверке столбца birth_place: {e}")
+            
+            # Проверяем и добавляем has_paid если его нет
+            try:
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='has_paid'")
+                if not cursor.fetchone():
+                    cursor.execute('ALTER TABLE users ADD COLUMN has_paid INTEGER DEFAULT 0')
+            except Exception as e:
+                logger.warning(f"Ошибка при проверке столбца has_paid: {e}")
+            
+            # Таблица для аналитики событий
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS events (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT,
+                    event_type TEXT NOT NULL,
+                    event_data TEXT,
+                    timestamp TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+        else:
+            # SQLite схемы
+            cursor.execute('''
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 first_name TEXT,
@@ -264,8 +276,20 @@ def init_db():
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)')
     
     conn.commit()
+    logger.info(f"Таблицы созданы успешно для БД типа: {db_type}")
+    
+    # Проверяем, что таблицы действительно созданы
+    if db_type == 'postgresql':
+        cursor.execute("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'")
+        tables = cursor.fetchall()
+        logger.info(f"Существующие таблицы в PostgreSQL: {[t[0] for t in tables]}")
+    else:
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = cursor.fetchall()
+        logger.info(f"Существующие таблицы в SQLite: {[t[0] for t in tables]}")
+    
     conn.close()
-    logger.info(f"База данных инициализирована ({db_type})")
+    logger.info(f"✅ База данных инициализирована ({db_type})")
 
 
 def save_user_profile(user_id, user_data):
@@ -2775,5 +2799,12 @@ def main():
 
 if __name__ == '__main__':
     # Инициализация базы данных при запуске
-    init_db()
+    logger.info("Запуск инициализации базы данных...")
+    try:
+        init_db()
+        logger.info("Инициализация БД завершена успешно, запуск бота...")
+    except Exception as e:
+        logger.error(f"❌ Критическая ошибка при инициализации БД: {e}", exc_info=True)
+        logger.error("Бот не может быть запущен без инициализированной БД!")
+        sys.exit(1)
     main()
