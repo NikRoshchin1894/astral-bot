@@ -225,6 +225,14 @@ def init_db():
             except Exception as e:
                 logger.warning(f"Ошибка при проверке столбца has_paid: {e}")
             
+            # Проверяем и добавляем username если его нет
+            try:
+                cursor.execute("SELECT column_name FROM information_schema.columns WHERE table_name='users' AND column_name='username'")
+                if not cursor.fetchone():
+                    cursor.execute('ALTER TABLE users ADD COLUMN username TEXT')
+            except Exception as e:
+                logger.warning(f"Ошибка при проверке столбца username: {e}")
+            
             # Таблица для аналитики событий
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS events (
@@ -260,6 +268,12 @@ def init_db():
             
             try:
                 cursor.execute('ALTER TABLE users ADD COLUMN birth_place TEXT')
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass
+            
+            try:
+                cursor.execute('ALTER TABLE users ADD COLUMN username TEXT')
                 conn.commit()
             except sqlite3.OperationalError:
                 pass
@@ -542,6 +556,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
     user = update.effective_user
     user_id = user.id
+    
+    # Сохраняем username в базу данных
+    save_user_username(user_id, user.username, user.first_name)
     
     # Логируем событие старта
     log_event(user_id, 'start', {
