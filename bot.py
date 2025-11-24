@@ -1232,13 +1232,70 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
     
     pdf_error_details = None
     
+    # Логируем начало генерации
+    generation_start_time = datetime.now()
+    logger.info(f"🚀 Начало генерации натальной карты для пользователя {user_id} в {generation_start_time.isoformat()}")
+    
     try:
-        # Запускаем синхронную генерацию в отдельном потоке
-        pdf_path, summary_text = await asyncio.to_thread(
-            generate_natal_chart_with_gpt, 
-            birth_data, 
-            openai_key
-        )
+        # Запускаем синхронную генерацию в отдельном потоке с таймаутом
+        # Таймаут: 10 минут (600 секунд) - генерация не должна занимать дольше
+        try:
+            pdf_path, summary_text = await asyncio.wait_for(
+                asyncio.to_thread(
+                    generate_natal_chart_with_gpt, 
+                    birth_data, 
+                    openai_key
+                ),
+                timeout=600.0  # 10 минут
+            )
+            
+            generation_end_time = datetime.now()
+            generation_duration = (generation_end_time - generation_start_time).total_seconds()
+            logger.info(f"✅ Генерация завершена для пользователя {user_id} за {generation_duration:.1f} секунд ({generation_duration/60:.1f} минут)")
+            
+        except asyncio.TimeoutError:
+            generation_end_time = datetime.now()
+            generation_duration = (generation_end_time - generation_start_time).total_seconds()
+            error_msg = f"Генерация превысила таймаут 10 минут (прошло {generation_duration/60:.1f} минут)"
+            logger.error(f"❌ ТАЙМАУТ: {error_msg} для пользователя {user_id}")
+            
+            pdf_error_details = {
+                'error_type': 'GenerationTimeout',
+                'error_message': error_msg,
+                'stage': 'generation',
+                'timeout_seconds': 600,
+                'actual_duration_seconds': generation_duration,
+                'birth_data': {
+                    'date': birth_data.get('date', 'N/A'),
+                    'time': birth_data.get('time', 'N/A'),
+                    'place': birth_data.get('place', 'N/A')
+                }
+            }
+            log_event(user_id, 'natal_chart_error', pdf_error_details)
+            
+            # Отправляем сообщение об ошибке
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="❌ *Ошибка генерации*\n\n"
+                         "Генерация натальной карты заняла слишком много времени.\n"
+                         "Попробуйте ещё раз.\n\n"
+                         "Если проблема повторяется, обратитесь в поддержку.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart'),
+                        InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                    ]])
+                )
+            except:
+                pass
+            
+            # Удаляем из active_generations и выходим
+            if user_id in active_generations:
+                del active_generations[user_id]
+            return
         
         # Проверяем, что PDF был создан (даже fallback)
         if not pdf_path:
