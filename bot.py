@@ -1111,6 +1111,7 @@ async def handle_natal_chart_request(query, context):
     user_data = context.user_data
     
     # Проверяем, не идет ли уже генерация для этого пользователя
+    # Сначала проверяем в памяти
     if user_id in active_generations:
         await query.edit_message_text(
             "⏳ *Генерация уже идет...*\n\n"
@@ -1122,6 +1123,88 @@ async def handle_natal_chart_request(query, context):
             parse_mode='Markdown'
         )
         return
+    
+    # Проверяем по базе данных - не зависла ли предыдущая генерация
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Получаем последнюю незавершенную генерацию
+        if db_type == 'postgresql':
+            cursor.execute('''
+                SELECT e1.timestamp 
+                FROM events e1
+                WHERE e1.user_id = %s 
+                AND e1.event_type = 'natal_chart_generation_start'
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM events e2 
+                    WHERE e2.user_id = %s 
+                    AND e2.event_type IN ('natal_chart_success', 'natal_chart_error')
+                    AND e2.timestamp > e1.timestamp
+                )
+                ORDER BY e1.timestamp DESC
+                LIMIT 1
+            ''', (user_id, user_id))
+        else:
+            cursor.execute('''
+                SELECT e1.timestamp 
+                FROM events e1
+                WHERE e1.user_id = ? 
+                AND e1.event_type = 'natal_chart_generation_start'
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM events e2 
+                    WHERE e2.user_id = ? 
+                    AND e2.event_type IN ('natal_chart_success', 'natal_chart_error')
+                    AND e2.timestamp > e1.timestamp
+                )
+                ORDER BY e1.timestamp DESC
+                LIMIT 1
+            ''', (user_id, user_id))
+        
+        start_row = cursor.fetchone()
+        
+        if start_row:
+            start_time_str = str(start_row[0])
+            try:
+                # Парсим timestamp
+                start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+                now = datetime.now(timezone.utc)
+                diff_seconds = (now - start_time).total_seconds()
+                diff_minutes = diff_seconds / 60
+                
+                # Если прошло более 10 минут, считаем генерацию зависшей
+                if diff_seconds > 600:  # 10 минут
+                    logger.warning(f"⚠️ Обнаружена зависшая генерация для пользователя {user_id}, начавшаяся {diff_minutes:.1f} минут назад. Логируем как ошибку и разрешаем новую генерацию.")
+                    
+                    # Логируем зависшую генерацию как ошибку
+                    log_event(user_id, 'natal_chart_error', {
+                        'error_type': 'StuckGeneration',
+                        'error_message': f'Генерация зависла и не завершилась за {diff_minutes:.1f} минут',
+                        'stage': 'generation',
+                        'stuck_duration_minutes': diff_minutes,
+                        'generation_start': start_time_str
+                    })
+                else:
+                    # Генерация еще идет, но не прошло 10 минут
+                    await query.edit_message_text(
+                        f"⏳ *Генерация уже идет...*\n\n"
+                        f"Предыдущая генерация началась {diff_minutes:.0f} минут назад. Пожалуйста, подождите завершения.\n\n"
+                        f"Обычно генерация занимает не более 5 минут.",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+                            [InlineKeyboardButton("💬 Поддержка", callback_data='support')]
+                        ]),
+                        parse_mode='Markdown'
+                    )
+                    conn.close()
+                    return
+            except Exception as e:
+                logger.warning(f"Ошибка при проверке зависшей генерации: {e}")
+                # В случае ошибки разрешаем новую генерацию
+    finally:
+        conn.close()
     
     # Загружаем профиль из БД, если его нет в user_data
     if not user_data.get('birth_name'):
