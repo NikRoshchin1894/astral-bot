@@ -526,6 +526,41 @@ def mark_user_paid(user_id: int):
     conn.close()
 
 
+def save_user_username(user_id: int, username: Optional[str], first_name: Optional[str]):
+    """Сохраняет username и first_name пользователя в базу данных"""
+    try:
+        if not username and not first_name:
+            return  # Нет данных для сохранения
+        
+        conn, db_type = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now().isoformat()
+        
+        if db_type == 'postgresql':
+            cursor.execute('''
+                INSERT INTO users (user_id, username, first_name, updated_at)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = COALESCE(EXCLUDED.username, users.username),
+                    first_name = COALESCE(EXCLUDED.first_name, users.first_name),
+                    updated_at = EXCLUDED.updated_at
+            ''', (user_id, username, first_name, now))
+        else:
+            cursor.execute('''
+                INSERT INTO users (user_id, username, first_name, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    username = COALESCE(excluded.username, users.username),
+                    first_name = COALESCE(excluded.first_name, users.first_name),
+                    updated_at = excluded.updated_at
+            ''', (user_id, username, first_name, now))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        # Логируем ошибку, но не прерываем выполнение команды /start
+        logger.warning(f"Не удалось сохранить username для пользователя {user_id}: {e}")
+
+
 def reset_user_payment(user_id: int):
     """Сбрасывает статус оплаты после выдачи натальной карты."""
     conn, db_type = get_db_connection()
