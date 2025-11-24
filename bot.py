@@ -1230,6 +1230,8 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
     
     payment_consumed = False
     
+    pdf_error_details = None
+    
     try:
         # Запускаем синхронную генерацию в отдельном потоке
         pdf_path, summary_text = await asyncio.to_thread(
@@ -1237,6 +1239,41 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
             birth_data, 
             openai_key
         )
+        
+        # Проверяем, что PDF был создан (даже fallback)
+        if not pdf_path:
+            pdf_error_details = {
+                'error_type': 'PDFGenerationFailed',
+                'error_message': 'PDF generation returned None (even fallback failed)',
+                'stage': 'pdf_creation',
+                'fallback_created': False,
+                'birth_data': {
+                    'date': birth_data.get('date', 'N/A'),
+                    'time': birth_data.get('time', 'N/A'),
+                    'place': birth_data.get('place', 'N/A')
+                }
+            }
+            logger.error(f"❌ КРИТИЧНО: PDF не был создан даже fallback для пользователя {user_id}")
+            log_event(user_id, 'natal_chart_error', pdf_error_details)
+            
+            # Отправляем сообщение об ошибке пользователю
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    text="❌ *Ошибка*\n\n"
+                         "К сожалению, не удалось сгенерировать натальную карту.\n"
+                         "Попробуйте ещё раз позже.\n\n"
+                         "Если проблема повторяется, обратитесь в поддержку.",
+                    parse_mode='Markdown',
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart'),
+                        InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                    ]])
+                )
+            except:
+                pass
 
         async def send_text_message(text: str, chat: int, msg_id: int, is_edit: bool):
             """Отправка текстового сообщения с безопасной обработкой Markdown."""
@@ -1360,10 +1397,16 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                     reply_markup=menu_keyboard
                 )
             except Exception as pdf_error:
-                logger.error(f"Ошибка при отправке PDF: {pdf_error}")
+                error_type = type(pdf_error).__name__
+                error_message = str(pdf_error)
+                logger.error(f"❌ ОШИБКА при отправке PDF пользователю {user_id}: {error_type}: {error_message}", exc_info=True)
+                
                 log_event(user_id, 'natal_chart_error', {
-                    'error': str(pdf_error),
-                    'stage': 'pdf_send'
+                    'error_type': error_type,
+                    'error_message': error_message,
+                    'stage': 'pdf_send',
+                    'filename': filename,
+                    'pdf_path': pdf_path if pdf_path else None
                 })
                 await send_text_message("⚠️ Не удалось отправить PDF. Попробуйте позже.", chat_id, message_id, is_edit=True)
                 # Добавляем кнопку Повторить попытку
@@ -1396,11 +1439,35 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
             )
         
     except Exception as e:
-        logger.error(f"Ошибка при генерации натальной карты для пользователя {user_id}: {e}", exc_info=True)
-        log_event(user_id, 'natal_chart_error', {
-            'error': str(e),
-            'stage': 'generation'
-        })
+        error_type = type(e).__name__
+        error_message = str(e)
+        error_traceback = None
+        try:
+            import traceback
+            error_traceback = traceback.format_exc()
+        except:
+            pass
+        
+        logger.error(f"❌ ОШИБКА при генерации натальной карты для пользователя {user_id}: {error_type}: {error_message}", exc_info=True)
+        
+        # Детальное логирование ошибки в базу данных
+        error_details = {
+            'error_type': error_type,
+            'error_message': error_message,
+            'stage': 'generation',
+            'user_id': user_id,
+            'birth_data': {
+                'date': birth_data.get('date', 'N/A'),
+                'time': birth_data.get('time', 'N/A'),
+                'place': birth_data.get('place', 'N/A')
+            }
+        }
+        
+        # Добавляем traceback если есть, но обрезаем до первых 1000 символов
+        if error_traceback:
+            error_details['traceback'] = error_traceback[:1000]
+        
+        log_event(user_id, 'natal_chart_error', error_details)
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -1916,10 +1983,19 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         logger.info(f"✅ PDF успешно создан: {temp_path}")
         return temp_path
     except Exception as pdf_error:
-        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА при формировании PDF: {pdf_error}", exc_info=True)
+        error_type = type(pdf_error).__name__
+        error_message = str(pdf_error)
+        import traceback
+        error_traceback = traceback.format_exc()
+        
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА при формировании PDF: {error_type}: {error_message}", exc_info=True)
         logger.error(f"   Использовался шрифт: {font_name}")
         logger.error(f"   Длина текста: {len(markdown_text) if markdown_text else 0} символов")
         logger.error(f"   Количество строк: {len(lines) if lines else 0}")
+        
+        # Сохраняем детали ошибки для последующего логирования (будет залогировано в generate_natal_chart_background)
+        # Здесь мы только логируем в консоль, т.к. у нас нет доступа к user_id
+        
         return None
 
 
@@ -2740,7 +2816,10 @@ def generate_natal_chart_with_gpt(birth_data, api_key):
         pdf_path = generate_pdf_from_markdown(markdown_text, pdf_title, chart_data)
 
         if not pdf_path:
-            raise ValueError("Не удалось сформировать PDF из Markdown")
+            error_msg = "Не удалось сформировать PDF из Markdown"
+            logger.error(f"❌ {error_msg}")
+            # Ошибка будет залогирована в generate_natal_chart_background с user_id
+            raise ValueError(error_msg)
 
         summary_section = _extract_summary(markdown_text) or markdown_text
         summary_clean = _clean_inline_markdown(summary_section)
@@ -2758,7 +2837,9 @@ def generate_natal_chart_with_gpt(birth_data, api_key):
         return pdf_path, summary_text
 
     except Exception as error:
-        logger.error(f"Ошибка при генерации натальной карты через GPT: {error}", exc_info=True)
+        error_type = type(error).__name__
+        error_message = str(error)
+        logger.error(f"Ошибка при генерации натальной карты через GPT: {error_type}: {error_message}", exc_info=True)
 
         fallback_text = "Карта временно недоступна. Попробуйте повторить запрос позже."
         # Пытаемся получить chart_data для fallback PDF
@@ -2768,11 +2849,17 @@ def generate_natal_chart_with_gpt(birth_data, api_key):
         except Exception as e:
             logger.warning(f"Не удалось получить chart_data для fallback PDF: {e}")
         
-        fallback_pdf = generate_pdf_from_markdown(
-            fallback_text,
-            f"Натальная карта: {birth_data.get('name', 'Пользователь')}",
-            fallback_chart_data
-        )
+        # Пытаемся создать fallback PDF
+        fallback_pdf = None
+        try:
+            fallback_pdf = generate_pdf_from_markdown(
+                fallback_text,
+                f"Натальная карта: {birth_data.get('name', 'Пользователь')}",
+                fallback_chart_data
+            )
+        except Exception as pdf_error:
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось создать даже fallback PDF: {pdf_error}", exc_info=True)
+            # Fallback PDF тоже не создался - это критическая ситуация
 
         return fallback_pdf, fallback_text
 
