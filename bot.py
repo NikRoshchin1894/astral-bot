@@ -3114,14 +3114,106 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     })
     
     mark_user_paid(user_id)
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart')],
-        [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
-    ])
-    await message.reply_text(
-        "✅ Оплата получена! Нажмите «📜 Натальная карта», чтобы сформировать отчёт.",
-        reply_markup=keyboard
+    
+    # Сразу запускаем генерацию натальной карты (как если бы пользователь нажал кнопку)
+    # Загружаем профиль пользователя
+    user_data = context.user_data
+    if not user_data.get('birth_name'):
+        loaded_data = load_user_profile(user_id)
+        if loaded_data:
+            user_data.update(loaded_data)
+    
+    has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+    
+    if not has_profile:
+        # Если профиль не заполнен, показываем сообщение о необходимости заполнить данные
+        await message.reply_text(
+            "✅ Оплата получена!\n\n"
+            "❌ *Данные не заполнены*\n\n"
+            "Для получения натальной карты необходимо заполнить данные о рождении.\n\n"
+            "💡 Вы можете ввести данные любого человека.\n\n"
+            "Нажмите кнопку ниже, чтобы заполнить данные:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("➕ Заполнить данные", callback_data='edit_profile'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            ]]),
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Профиль заполнен, запускаем генерацию
+    # Проверяем, не идет ли уже генерация
+    if user_id in active_generations:
+        await message.reply_text(
+            "⏳ *Генерация уже идет...*\n\n"
+            "Пожалуйста, подождите завершения текущей генерации натальной карты.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+                [InlineKeyboardButton("💬 Поддержка", callback_data='support')]
+            ]),
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Формируем birth_data для генерации
+    birth_name = user_data.get('birth_name') or None
+    if not birth_name:
+        loaded_profile = load_user_profile(user_id)
+        if loaded_profile and loaded_profile.get('birth_name'):
+            birth_name = loaded_profile.get('birth_name')
+            user_data['birth_name'] = birth_name
+    if not birth_name:
+        birth_name = 'Пользователь'
+    
+    birth_data = {
+        'name': birth_name,
+        'date': user_data.get('birth_date', 'Не указано'),
+        'time': user_data.get('birth_time', 'Не указано'),
+        'place': user_data.get('birth_place', 'Не указано')
+    }
+    
+    openai_key = os.getenv('OPENAI_API_KEY')
+    if not openai_key:
+        await message.reply_text(
+            "❌ *Ошибка настройки*\n\n"
+            "API ключ OpenAI не настроен.\n"
+            "Обратитесь к администратору бота.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            ]]),
+            parse_mode='Markdown'
+        )
+        return
+    
+    # Отправляем сообщение о начале генерации
+    generation_message = await message.reply_text(
+        "⏳ *Генерация натальной карты...*\n\n"
+        "Обычно генерация занимает не более 5 минут.\n\n"
+        "Пожалуйста, подождите.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+            [InlineKeyboardButton("💬 Поддержка", callback_data='support')]
+        ]),
+        parse_mode='Markdown'
     )
+    
+    # Логируем начало генерации
+    log_event(user_id, 'natal_chart_generation_start', {
+        'birth_date': birth_data.get('date'),
+        'birth_time': birth_data.get('time'),
+        'birth_place': birth_data.get('place')
+    })
+    
+    # Сохраняем информацию о генерации
+    active_generations[user_id] = {
+        'chat_id': generation_message.chat_id,
+        'message_id': generation_message.message_id,
+        'birth_data': birth_data,
+        'openai_key': openai_key
+    }
+    
+    # Запускаем генерацию в фоне
+    asyncio.create_task(generate_natal_chart_background(user_id, context))
 
 
 def main():
