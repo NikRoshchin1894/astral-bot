@@ -1266,8 +1266,23 @@ async def handle_natal_chart_request(query, context):
         parse_mode='Markdown'
     )
     
+    # Убеждаемся, что используем имя из заполненного профиля, а не из Telegram
+    # Сначала пытаемся получить birth_name из user_data (заполненный профиль)
+    birth_name = user_data.get('birth_name') or None
+    
+    # Если birth_name нет, загружаем из базы данных
+    if not birth_name:
+        loaded_profile = load_user_profile(user_id)
+        if loaded_profile and loaded_profile.get('birth_name'):
+            birth_name = loaded_profile.get('birth_name')
+            user_data['birth_name'] = birth_name
+    
+    # Если все еще нет имени, используем fallback
+    if not birth_name:
+        birth_name = 'Пользователь'
+    
     birth_data = {
-        'name': user_data.get('birth_name', 'Пользователь'),
+        'name': birth_name,  # Используем имя из заполненного профиля
         'date': user_data.get('birth_date', 'Не указано'),
         'time': user_data.get('birth_time', 'Не указано'),
         'place': user_data.get('birth_place', 'Не указано')
