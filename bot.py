@@ -1509,17 +1509,35 @@ NATAL_CHART_PRICE_MINOR = NATAL_CHART_PRICE_RUB * 100  # копейки для T
 
 def _register_reportlab_font() -> str:
     """Регистрирует Unicode-шрифт для поддержки кириллицы в PDF"""
+    logger.info("🔍 Поиск шрифта для PDF...")
+    
+    # Сначала проверяем, что папка fonts существует
+    fonts_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+    logger.info(f"📁 Папка fonts: {fonts_dir}")
+    logger.info(f"📁 Папка fonts существует: {os.path.exists(fonts_dir)}")
+    
+    if os.path.exists(fonts_dir):
+        files_in_fonts = os.listdir(fonts_dir)
+        logger.info(f"📄 Файлы в папке fonts: {files_in_fonts}")
+    
     for candidate in REPORTLAB_FONT_CANDIDATES:
-        if os.path.exists(candidate):
+        exists = os.path.exists(candidate)
+        logger.info(f"   Проверка: {candidate} - {'✅ существует' if exists else '❌ не найден'}")
+        
+        if exists:
             try:
+                logger.info(f"   Попытка регистрации шрифта: {candidate}")
                 pdfmetrics.registerFont(TTFont('ReportLabUnicode', candidate))
-                logger.info(f"✅ Шрифт зарегистрирован: {candidate}")
+                logger.info(f"✅ Шрифт успешно зарегистрирован: {candidate}")
                 return 'ReportLabUnicode'
             except Exception as font_error:
-                logger.warning(f"Не удалось зарегистрировать шрифт {candidate}: {font_error}")
+                logger.warning(f"   ⚠️ Не удалось зарегистрировать шрифт {candidate}: {font_error}", exc_info=True)
     
     # Критическое предупреждение - без Unicode шрифта кириллица не будет отображаться
     logger.error("❌ КРИТИЧНО: Не найден Unicode-шрифт с поддержкой кириллицы!")
+    logger.error("   Проверенные пути:")
+    for candidate in REPORTLAB_FONT_CANDIDATES:
+        logger.error(f"     - {candidate}")
     logger.error("   Текст в PDF будет отображаться как прямоугольники.")
     logger.error("   Решение: добавьте DejaVuSans.ttf в папку fonts/ проекта")
     logger.warning("   Используется Helvetica (без поддержки кириллицы)")
@@ -1852,10 +1870,15 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             story.append(Paragraph("Данные недоступны.", base_style))
 
         # Собираем документ (PageTemplate уже добавлен выше)
+        logger.info(f"📄 Создание PDF документа (используется шрифт: {font_name})...")
         doc.build(story)
+        logger.info(f"✅ PDF успешно создан: {temp_path}")
         return temp_path
     except Exception as pdf_error:
-        logger.error(f"Ошибка при локальном формировании PDF: {pdf_error}", exc_info=True)
+        logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА при формировании PDF: {pdf_error}", exc_info=True)
+        logger.error(f"   Использовался шрифт: {font_name}")
+        logger.error(f"   Длина текста: {len(markdown_text) if markdown_text else 0} символов")
+        logger.error(f"   Количество строк: {len(lines) if lines else 0}")
         return None
 
 
