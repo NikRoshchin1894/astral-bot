@@ -1426,6 +1426,19 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                     except OSError as remove_error:
                         logger.warning(f"Не удалось удалить временный PDF-файл: {remove_error}")
         else:
+            # PDF не был создан
+            logger.error(f"❌ PDF не был создан для пользователя {user_id}")
+            log_event(user_id, 'natal_chart_error', {
+                'error_type': 'PDFNotCreated',
+                'error_message': 'PDF generation returned None',
+                'stage': 'pdf_creation',
+                'birth_data': {
+                    'date': birth_data.get('date', 'N/A'),
+                    'time': birth_data.get('time', 'N/A'),
+                    'place': birth_data.get('place', 'N/A')
+                }
+            })
+            
             await send_text_message("⚠️ Не удалось получить PDF. Попробуйте позже.", chat_id, message_id, is_edit=True)
             # Не списываем оплату, позволяем повторить генерацию
             retry_keyboard = InlineKeyboardMarkup([[
