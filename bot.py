@@ -2126,7 +2126,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             "Теперь вы можете получить свою натальную карту.",
             parse_mode='Markdown',
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📜 Получить натальную карту", callback_data='natal_chart'),
+                InlineKeyboardButton("📜 Получить карту", callback_data='natal_chart'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
@@ -2142,7 +2142,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Имя успешно изменено!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
@@ -2163,7 +2163,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Дата рождения успешно изменена!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
@@ -2184,7 +2184,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Время рождения успешно изменено!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
@@ -2205,7 +2205,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         await update.message.reply_text(
             "✅ Место рождения успешно изменено!",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]])
         )
