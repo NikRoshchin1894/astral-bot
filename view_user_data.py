@@ -17,7 +17,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # База данных
-DATABASE_URL = os.getenv('DATABASE_URL')
+# Railway предоставляет два URL:
+# - DATABASE_URL - для внутренних подключений (postgres.railway.internal)
+# - DATABASE_PUBLIC_URL - для внешних подключений (с вашего компьютера)
+DATABASE_URL = os.getenv('DATABASE_PUBLIC_URL') or os.getenv('DATABASE_URL')
 DATABASE = 'users.db'
 
 def get_db_connection():
@@ -25,18 +28,25 @@ def get_db_connection():
     if DATABASE_URL:
         try:
             result = urlparse(DATABASE_URL)
+            print(f"🔌 Подключение к PostgreSQL: {result.hostname}:{result.port}/{result.path[1:]}")
             conn = psycopg2.connect(
                 database=result.path[1:],
                 user=result.username,
                 password=result.password,
                 host=result.hostname,
-                port=result.port
+                port=result.port,
+                connect_timeout=10
             )
+            print("✅ Подключение к PostgreSQL установлено")
             return conn, 'postgresql'
         except Exception as e:
-            print(f"Ошибка подключения к PostgreSQL: {e}, используем SQLite")
+            print(f"❌ Ошибка подключения к PostgreSQL: {e}")
+            print("💡 Подсказка: Убедитесь, что DATABASE_PUBLIC_URL установлен в .env")
+            print("   Railway предоставляет DATABASE_PUBLIC_URL для внешних подключений")
+            print("   Используем локальный SQLite...")
             return sqlite3.connect(DATABASE), 'sqlite'
     else:
+        print("⚠️ DATABASE_URL не установлена, используем локальный SQLite")
         return sqlite3.connect(DATABASE), 'sqlite'
 
 
