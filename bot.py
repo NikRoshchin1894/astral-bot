@@ -1649,6 +1649,12 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
     try:
         lines = (markdown_text or '').split('\n')
         font_name = _register_reportlab_font()
+        
+        # Проверяем, что шрифт действительно поддерживает кириллицу
+        if font_name == 'Helvetica':
+            logger.error("⚠️ ВНИМАНИЕ: Используется шрифт без поддержки кириллицы!")
+            logger.error("   PDF будет содержать прямоугольники вместо текста.")
+            logger.error("   Необходимо добавить DejaVuSans.ttf в папку fonts/")
 
         fd, temp_path = tempfile.mkstemp(suffix='.pdf')
         os.close(fd)
