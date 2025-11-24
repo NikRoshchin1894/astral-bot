@@ -527,7 +527,8 @@ def mark_user_paid(user_id: int):
 
 
 def save_user_username(user_id: int, username: Optional[str], first_name: Optional[str]):
-    """Сохраняет username и first_name пользователя в базу данных"""
+    """Сохраняет username и first_name пользователя в базу данных.
+    ВАЖНО: Не перезаписывает first_name, если оно уже заполнено пользователем (birth_name)"""
     try:
         if not username and not first_name:
             return  # Нет данных для сохранения
@@ -536,24 +537,57 @@ def save_user_username(user_id: int, username: Optional[str], first_name: Option
         cursor = conn.cursor()
         now = datetime.now().isoformat()
         
+        # Проверяем, есть ли уже заполненный профиль
+        # Если first_name уже заполнено пользователем (birth_name), не перезаписываем его
         if db_type == 'postgresql':
-            cursor.execute('''
-                INSERT INTO users (user_id, username, first_name, updated_at)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    username = COALESCE(EXCLUDED.username, users.username),
-                    first_name = COALESCE(EXCLUDED.first_name, users.first_name),
-                    updated_at = EXCLUDED.updated_at
-            ''', (user_id, username, first_name, now))
+            cursor.execute('SELECT first_name FROM users WHERE user_id = %s', (user_id,))
         else:
-            cursor.execute('''
-                INSERT INTO users (user_id, username, first_name, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    username = COALESCE(excluded.username, users.username),
-                    first_name = COALESCE(excluded.first_name, users.first_name),
-                    updated_at = excluded.updated_at
-            ''', (user_id, username, first_name, now))
+            cursor.execute('SELECT first_name FROM users WHERE user_id = ?', (user_id,))
+        
+        existing_row = cursor.fetchone()
+        existing_first_name = existing_row[0] if existing_row and existing_row[0] else None
+        
+        # Если first_name уже заполнено (пользователь ввел birth_name), не перезаписываем его
+        # Сохраняем только username и обновляем updated_at
+        if existing_first_name and existing_first_name.strip():
+            # Пользователь уже заполнил имя, сохраняем только username
+            if db_type == 'postgresql':
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, updated_at)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username = COALESCE(EXCLUDED.username, users.username),
+                        updated_at = EXCLUDED.updated_at
+                ''', (user_id, username, now))
+            else:
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, updated_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username = COALESCE(excluded.username, users.username),
+                        updated_at = excluded.updated_at
+                ''', (user_id, username, now))
+        else:
+            # Имени еще нет, можем сохранить first_name из Telegram (как начальное значение)
+            if db_type == 'postgresql':
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, first_name, updated_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username = COALESCE(EXCLUDED.username, users.username),
+                        first_name = COALESCE(EXCLUDED.first_name, users.first_name),
+                        updated_at = EXCLUDED.updated_at
+                ''', (user_id, username, first_name, now))
+            else:
+                cursor.execute('''
+                    INSERT INTO users (user_id, username, first_name, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(user_id) DO UPDATE SET
+                        username = COALESCE(excluded.username, users.username),
+                        first_name = COALESCE(excluded.first_name, users.first_name),
+                        updated_at = excluded.updated_at
+                ''', (user_id, username, first_name, now))
+        
         conn.commit()
         conn.close()
     except Exception as e:
