@@ -1495,8 +1495,14 @@ def clean_markdown(text):
     return text
 
 
+# Определяем базовый путь проекта (абсолютный путь к директории, где находится bot.py)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+FONTS_DIR = os.path.join(BASE_DIR, 'fonts')
+DEJAVU_FONT_PATH = os.path.join(FONTS_DIR, 'DejaVuSans.ttf')
+
 REPORTLAB_FONT_CANDIDATES = [
-    os.path.join(os.path.dirname(__file__), 'fonts', 'DejaVuSans.ttf'),
+    DEJAVU_FONT_PATH,  # Основной шрифт в папке проекта
+    os.path.join(os.path.dirname(__file__), 'fonts', 'DejaVuSans.ttf'),  # Относительный путь (fallback)
     '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
     '/Library/Fonts/Arial Unicode.ttf',
     '/System/Library/Fonts/Supplemental/Arial.ttf',
