@@ -241,20 +241,54 @@ def list_users():
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
-    if db_type == 'postgresql':
-        cursor.execute('''
-            SELECT user_id, username, first_name, birth_date, has_paid, updated_at 
-            FROM users 
-            ORDER BY updated_at DESC 
-            LIMIT 50
-        ''')
+    # Проверяем наличие колонки username
+    has_username = False
+    try:
+        if db_type == 'postgresql':
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='username'
+            """)
+            has_username = cursor.fetchone() is not None
+        else:
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [row[1] for row in cursor.fetchall()]
+            has_username = 'username' in columns
+    except:
+        pass
+    
+    if has_username:
+        if db_type == 'postgresql':
+            cursor.execute('''
+                SELECT user_id, username, first_name, birth_date, has_paid, updated_at 
+                FROM users 
+                ORDER BY updated_at DESC 
+                LIMIT 50
+            ''')
+        else:
+            cursor.execute('''
+                SELECT user_id, username, first_name, birth_date, has_paid, updated_at 
+                FROM users 
+                ORDER BY updated_at DESC 
+                LIMIT 50
+            ''')
     else:
-        cursor.execute('''
-            SELECT user_id, username, first_name, birth_date, has_paid, updated_at 
-            FROM users 
-            ORDER BY updated_at DESC 
-            LIMIT 50
-        ''')
+        # Если колонки нет, выбираем без username
+        if db_type == 'postgresql':
+            cursor.execute('''
+                SELECT user_id, NULL as username, first_name, birth_date, has_paid, updated_at 
+                FROM users 
+                ORDER BY updated_at DESC 
+                LIMIT 50
+            ''')
+        else:
+            cursor.execute('''
+                SELECT user_id, NULL as username, first_name, birth_date, has_paid, updated_at 
+                FROM users 
+                ORDER BY updated_at DESC 
+                LIMIT 50
+            ''')
     
     users = cursor.fetchall()
     
