@@ -1491,14 +1491,21 @@ NATAL_CHART_PRICE_MINOR = NATAL_CHART_PRICE_RUB * 100  # копейки для T
 
 
 def _register_reportlab_font() -> str:
+    """Регистрирует Unicode-шрифт для поддержки кириллицы в PDF"""
     for candidate in REPORTLAB_FONT_CANDIDATES:
         if os.path.exists(candidate):
             try:
                 pdfmetrics.registerFont(TTFont('ReportLabUnicode', candidate))
+                logger.info(f"✅ Шрифт зарегистрирован: {candidate}")
                 return 'ReportLabUnicode'
             except Exception as font_error:
                 logger.warning(f"Не удалось зарегистрировать шрифт {candidate}: {font_error}")
-    logger.warning("Не найден Unicode-шрифт. Будет использован встроенный шрифт без кириллицы.")
+    
+    # Критическое предупреждение - без Unicode шрифта кириллица не будет отображаться
+    logger.error("❌ КРИТИЧНО: Не найден Unicode-шрифт с поддержкой кириллицы!")
+    logger.error("   Текст в PDF будет отображаться как прямоугольники.")
+    logger.error("   Решение: добавьте DejaVuSans.ttf в папку fonts/ проекта")
+    logger.warning("   Используется Helvetica (без поддержки кириллицы)")
     return 'Helvetica'
 
 
