@@ -1086,9 +1086,22 @@ async def start_payment_process(query, context):
     
     provider_token = os.getenv('TELEGRAM_PROVIDER_TOKEN')
     if not provider_token:
-        await query.answer("Настройка оплаты не завершена. Свяжитесь с администратором.", show_alert=True)
+        logger.error(f"TELEGRAM_PROVIDER_TOKEN не установлен для пользователя {user_id}")
+        await query.answer(
+            "❌ Настройка оплаты не завершена.\n\n"
+            "Для получения тестового токена провайдера:\n"
+            "1. Откройте @BotFather в Telegram\n"
+            "2. Отправьте /mybots\n"
+            "3. Выберите вашего бота\n"
+            "4. Выберите 'Payments'\n"
+            "5. Выберите 'Test' для тестового токена\n"
+            "6. Скопируйте токен и добавьте в переменную окружения TELEGRAM_PROVIDER_TOKEN",
+            show_alert=True
+        )
         log_event(user_id, 'payment_error', {'error': 'provider_token_not_set'})
         return
+    
+    logger.info(f"Используется provider_token для создания invoice (первые 10 символов: {provider_token[:10]}...)")
 
     prices = [LabeledPrice(label='Натальная карта', amount=NATAL_CHART_PRICE_MINOR)]
     payload = f"natal_chart:{query.from_user.id}:{uuid.uuid4()}"
