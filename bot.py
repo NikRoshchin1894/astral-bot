@@ -1103,6 +1103,13 @@ async def start_payment_process(query, context):
     
     logger.info(f"Используется provider_token для создания invoice (первые 10 символов: {provider_token[:10]}...)")
     logger.info(f"💰 Создание invoice: цена = {NATAL_CHART_PRICE_RUB} ₽ ({NATAL_CHART_PRICE_MINOR} копеек)")
+    
+    # Валидация: проверяем, что цена в допустимых пределах для Telegram Payments
+    if NATAL_CHART_PRICE_MINOR < 1 or NATAL_CHART_PRICE_MINOR > 999999999:
+        logger.error(f"❌ Некорректная цена для платежа: {NATAL_CHART_PRICE_MINOR} копеек")
+        await query.answer("Ошибка: некорректная цена. Свяжитесь с администратором.", show_alert=True)
+        log_event(user_id, 'payment_error', {'error': 'invalid_price', 'amount_minor': NATAL_CHART_PRICE_MINOR})
+        return
 
     prices = [LabeledPrice(label='Натальная карта', amount=NATAL_CHART_PRICE_MINOR)]
     payload = f"natal_chart:{query.from_user.id}:{uuid.uuid4()}"
