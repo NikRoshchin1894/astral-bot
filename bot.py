@@ -1102,20 +1102,29 @@ async def start_payment_process(query, context):
         return
     
     logger.info(f"Используется provider_token для создания invoice (первые 10 символов: {provider_token[:10]}...)")
+    logger.info(f"💰 Создание invoice: цена = {NATAL_CHART_PRICE_RUB} ₽ ({NATAL_CHART_PRICE_MINOR} копеек)")
 
     prices = [LabeledPrice(label='Натальная карта', amount=NATAL_CHART_PRICE_MINOR)]
     payload = f"natal_chart:{query.from_user.id}:{uuid.uuid4()}"
 
     await query.answer()
-    await query.message.reply_invoice(
-        title='Натальная карта',
-        description=f'Подробная натальная карта в PDF-формате. Стоимость {NATAL_CHART_PRICE_RUB} ₽.',
-        payload=payload,
-        provider_token=provider_token,
-        currency='RUB',
-        prices=prices,
-        need_name=True
-    )
+    
+    try:
+        await query.message.reply_invoice(
+            title='Натальная карта',
+            description=f'Подробная натальная карта в PDF-формате. Стоимость {NATAL_CHART_PRICE_RUB} ₽.',
+            payload=payload,
+            provider_token=provider_token,
+            currency='RUB',
+            prices=prices,
+            need_name=True
+        )
+        logger.info(f"✅ Invoice успешно отправлен пользователю {user_id}")
+    except Exception as invoice_error:
+        logger.error(f"❌ Ошибка при отправке invoice: {invoice_error}", exc_info=True)
+        log_event(user_id, 'payment_error', {'error': str(invoice_error), 'stage': 'invoice_creation'})
+        await query.answer("Ошибка при создании платежа. Попробуйте позже.", show_alert=True)
+        return
 
     menu_keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
