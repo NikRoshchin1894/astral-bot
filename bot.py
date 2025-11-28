@@ -32,7 +32,7 @@ from openai import OpenAI
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, PageTemplate, BaseDocTemplate, Frame
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, PageTemplate, BaseDocTemplate, Frame, Anchor, KeepTogether
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.colors import HexColor, Color, black, white
 from reportlab.lib.units import cm
@@ -2099,18 +2099,36 @@ INTRODUCTORY_TEXT = """Перед вами — персональный разб
 def _extract_section_headings(markdown_text: str) -> list:
     """
     Извлекает заголовки разделов из markdown текста.
-    Возвращает список кортежей (уровень, текст заголовка)
+    Возвращает список кортежей (уровень, текст заголовка, имя для anchor)
     """
     headings = []
     lines = markdown_text.split('\n')
+    section_num = 0
     for line in lines:
         stripped = line.lstrip()
         if stripped.startswith('##'):
             heading_level = len(stripped) - len(stripped.lstrip('#'))
             if heading_level == 2:  # Только заголовки второго уровня (## Раздел N: ...)
                 heading_text = stripped.lstrip('#').strip()
-                headings.append((heading_level, heading_text))
+                section_num += 1
+                # Создаем имя для anchor (уникальное, безопасное для PDF)
+                anchor_name = f"section_{section_num}"
+                headings.append((heading_level, heading_text, anchor_name))
     return headings
+
+
+def _generate_anchor_name(heading_text: str) -> str:
+    """Генерирует безопасное имя для anchor из текста заголовка"""
+    # Извлекаем номер раздела из заголовка (формат: "Раздел N: Название" или "## Раздел N: Название")
+    import re
+    # Убираем знаки # в начале, если есть
+    cleaned = heading_text.lstrip('#').strip()
+    match = re.match(r'Раздел\s+(\d+)', cleaned, re.IGNORECASE)
+    if match:
+        section_num = match.group(1)
+        return f"section_{section_num}"
+    # Если нет номера, используем хэш (fallback)
+    return f"section_{abs(hash(cleaned)) % 10000}"
 
 
 def draw_static_natal_chart_image(canvas, doc):
@@ -2340,10 +2358,13 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             leftIndent=0
         )
         
-        # Добавляем пункты содержания
-        for level, heading_text in section_headings:
+        # Добавляем пункты содержания с кликабельными ссылками
+        for level, heading_text, anchor_name in section_headings:
             cleaned_heading = _clean_inline_markdown(heading_text)
-            story.append(Paragraph(f"• {cleaned_heading}", toc_item_style))
+            # Создаем кликабельную ссылку в содержании
+            # Используем тег <link> для создания внутренней ссылки
+            link_text = f'<link destination="{anchor_name}" color="#ffd700"><u>• {cleaned_heading}</u></link>'
+            story.append(Paragraph(link_text, toc_item_style))
         
         # ===== РАЗРЫВ СТРАНИЦЫ =====
         story.append(PageBreak())
@@ -2399,6 +2420,13 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             if stripped.startswith('#'):
                 heading_level = len(stripped) - len(stripped.lstrip('#'))
                 stripped = stripped.lstrip('#').strip()
+                
+                # Для заголовков второго уровня (разделы) добавляем Anchor для навигации
+                if heading_level == 2:
+                    # Генерируем имя для anchor из заголовка
+                    anchor_name = _generate_anchor_name(stripped)
+                    # Создаем Anchor перед заголовком
+                    story.append(Anchor(anchor_name))
                 
                 # Добавляем космические символы к заголовкам разделов
                 if heading_level == 1:
