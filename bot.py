@@ -32,7 +32,7 @@ from openai import OpenAI
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, PageTemplate, BaseDocTemplate, Frame, Anchor, KeepTogether
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, PageTemplate, BaseDocTemplate, Frame
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.colors import HexColor, Color, black, white
 from reportlab.lib.units import cm
@@ -2421,12 +2421,13 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 heading_level = len(stripped) - len(stripped.lstrip('#'))
                 stripped = stripped.lstrip('#').strip()
                 
-                # Для заголовков второго уровня (разделы) добавляем Anchor для навигации
+                # Для заголовков второго уровня (разделы) добавляем якорь для навигации
+                # Используем тег <a name="..."> в самом заголовке
                 if heading_level == 2:
                     # Генерируем имя для anchor из заголовка
                     anchor_name = _generate_anchor_name(stripped)
-                    # Создаем Anchor перед заголовком
-                    story.append(Anchor(anchor_name))
+                    # Добавляем якорь в начало заголовка через тег <a name="...">
+                    stripped = f'<a name="{anchor_name}"/>{stripped}'
                 
                 # Добавляем космические символы к заголовкам разделов
                 if heading_level == 1:
