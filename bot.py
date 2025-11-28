@@ -3365,8 +3365,13 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.pre_checkout_query
     user_id = query.from_user.id
     
+    logger.info(f"🔔 Получен pre-checkout запрос от пользователя {user_id}")
+    logger.info(f"   Payload: {query.invoice_payload}")
+    logger.info(f"   Сумма: {query.total_amount} {query.currency}")
+    
     try:
         if not query.invoice_payload.startswith('natal_chart:'):
+            logger.warning(f"❌ Неверный payload: {query.invoice_payload}")
             log_event(user_id, 'payment_error', {'error': 'invalid_payload', 'payload': query.invoice_payload})
             await query.answer(ok=False, error_message='Некорректный платежный запрос')
             return
@@ -3378,9 +3383,10 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             'currency': query.currency
         })
         
+        logger.info(f"✅ Pre-checkout подтвержден для пользователя {user_id}")
         await query.answer(ok=True)
     except Exception as error:
-        logger.error(f"Ошибка при подтверждении оплаты: {error}", exc_info=True)
+        logger.error(f"❌ Ошибка при подтверждении оплаты: {error}", exc_info=True)
         log_event(user_id, 'payment_error', {'error': str(error), 'stage': 'precheckout'})
         await query.answer(ok=False, error_message='Ошибка при обработке платежа')
 
@@ -3389,6 +3395,11 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     message = update.message
     user_id = message.from_user.id
     payment = message.successful_payment
+    
+    logger.info(f"💳 Получен успешный платеж от пользователя {user_id}")
+    logger.info(f"   Сумма: {payment.total_amount} {payment.currency}")
+    logger.info(f"   Payload: {payment.invoice_payload}")
+    logger.info(f"   Charge ID: {payment.provider_payment_charge_id}")
     
     # Логируем успешную оплату
     log_event(user_id, 'payment_success', {
@@ -3399,6 +3410,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     })
     
     mark_user_paid(user_id)
+    logger.info(f"✅ Пользователь {user_id} помечен как оплативший")
     
     # Сразу запускаем генерацию натальной карты (как если бы пользователь нажал кнопку)
     # Загружаем профиль пользователя
