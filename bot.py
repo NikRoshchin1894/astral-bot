@@ -727,28 +727,11 @@ async def back_to_menu(query):
     ]
     
     keyboard = InlineKeyboardMarkup([[b] for b in buttons])
-    
-    try:
-        # Пытаемся редактировать существующее сообщение
-        await query.edit_message_text(
-            "🌟 *Главное меню*\n\nВыберите раздел:",
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        # Если редактирование не удалось (например, сообщение уже было удалено или изменено),
-        # отправляем новое сообщение
-        logger.warning(f"Не удалось отредактировать сообщение для возврата в меню: {e}")
-        try:
-            await query.message.reply_text(
-                "🌟 *Главное меню*\n\nВыберите раздел:",
-                reply_markup=keyboard,
-                parse_mode='Markdown'
-            )
-        except Exception as e2:
-            logger.error(f"Не удалось отправить новое сообщение для возврата в меню: {e2}")
-            # В крайнем случае, просто отвечаем на callback
-            await query.answer("Вернуться в главное меню можно через команду /start")
+    await query.edit_message_text(
+        "🌟 *Главное меню*\n\nВыберите раздел:",
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
 
 
 async def show_support(query, context):
@@ -972,7 +955,7 @@ async def handle_planets_request(query, context):
         log_event(user_id, 'planets_data_success', {})
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📜 Получить интерпретацию (400 ₽)", callback_data='natal_chart')],
+            [InlineKeyboardButton(f"📜 Получить интерпретацию ({NATAL_CHART_PRICE_RUB} ₽)", callback_data='natal_chart')],
             [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
         ])
         
@@ -1830,7 +1813,7 @@ REPORTLAB_FONT_CANDIDATES = [
     '/Library/Fonts/Arial.ttf',
 ]
 
-NATAL_CHART_PRICE_RUB = 400
+NATAL_CHART_PRICE_RUB = 499
 NATAL_CHART_PRICE_MINOR = NATAL_CHART_PRICE_RUB * 100  # копейки для Telegram
 
 
