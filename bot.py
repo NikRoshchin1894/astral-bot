@@ -2350,33 +2350,11 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             alignment=4  # Выравнивание по ширине
         )
         
-        # Стили заголовков для вводного текста
-        # H1 - используем тот же стиль что и в основных разделах (heading_styles[1])
-        # H2, H3 - того же размера что и основной текст (15pt) с цветовым выделением
+        # Стили заголовков для вводного текста - используем те же стили что и в основном тексте
         intro_heading_styles = {
-            1: heading_styles[1],  # Используем тот же стиль что и для основных разделов
-            2: ParagraphStyle(
-                'Intro_H2', 
-                parent=intro_base_style, 
-                fontSize=15,  # Тот же размер что и основной текст
-                leading=24,  # Межстрочный как у основного текста
-                spaceBefore=24, 
-                spaceAfter=16,
-                textColor=cosmic_gold,  # Сохраняем цветовое выделение
-                fontName=font_name,
-                alignment=0
-            ),
-            3: ParagraphStyle(
-                'Intro_H3', 
-                parent=intro_base_style, 
-                fontSize=15,  # Тот же размер что и основной текст
-                leading=24,  # Межстрочный как у основного текста
-                spaceBefore=20, 
-                spaceAfter=14,
-                textColor=cosmic_silver,  # Сохраняем цветовое выделение
-                fontName=font_name,
-                alignment=0
-            ),
+            1: heading_styles[1],  # H1 - тот же стиль что и для основных разделов (36pt)
+            2: heading_styles[2],  # H2 - тот же стиль что и для подзаголовков (24pt)
+            3: heading_styles[3],  # H3 - тот же стиль что и для подзаголовков третьего уровня (18pt)
         }
         
         # Premium стиль для заголовка документа (по центру, 36pt)
