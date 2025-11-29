@@ -2287,6 +2287,43 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             ),
         }
         
+        # Стили заголовков для вводного текста (тот же размер шрифта, что и основной текст, но с цветовым выделением)
+        intro_heading_styles = {
+            1: ParagraphStyle(
+                'Intro_H1', 
+                parent=base_style, 
+                fontSize=16,  # Тот же размер, что и основной текст
+                leading=24, 
+                spaceBefore=20, 
+                spaceAfter=12,
+                textColor=cosmic_gold,  # Сохраняем цветовое выделение
+                fontName=font_name,
+                alignment=0  # По левому краю
+            ),
+            2: ParagraphStyle(
+                'Intro_H2', 
+                parent=base_style, 
+                fontSize=16,  # Тот же размер, что и основной текст
+                leading=24, 
+                spaceBefore=16, 
+                spaceAfter=10,
+                textColor=cosmic_gold,  # Сохраняем цветовое выделение
+                fontName=font_name,
+                alignment=0  # По левому краю
+            ),
+            3: ParagraphStyle(
+                'Intro_H3', 
+                parent=base_style, 
+                fontSize=16,  # Тот же размер, что и основной текст
+                leading=24, 
+                spaceBefore=14, 
+                spaceAfter=8,
+                textColor=cosmic_silver,  # Сохраняем цветовое выделение
+                fontName=font_name,
+                alignment=0  # По левому краю
+            ),
+        }
+        
         # Стиль для заголовка документа (по центру)
         title_style = ParagraphStyle(
             'Title', 
@@ -2391,8 +2428,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 bullet_char = "✦"
             
             cleaned = _clean_inline_markdown(stripped)
-            if heading_level and heading_level in heading_styles:
-                story.append(Paragraph(cleaned, heading_styles[heading_level]))
+            if heading_level and heading_level in intro_heading_styles:
+                # Для вводного текста используем стили с тем же размером шрифта, что и основной текст
+                story.append(Paragraph(cleaned, intro_heading_styles[heading_level]))
             elif bullet:
                 story.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
             else:
