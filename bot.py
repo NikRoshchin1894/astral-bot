@@ -2318,7 +2318,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 parent=base_style, 
                 fontSize=24,  # 24pt для подзаголовков
                 leading=30,  # 24pt * 1.25 = 30pt
-                spaceBefore=40,  # Отступ перед подзаголовком
+                spaceBefore=20,  # Одинаковый отступ перед всеми разделами (как перед первым)
                 spaceAfter=18,
                 textColor=cosmic_gold,
                 fontName=font_name,
