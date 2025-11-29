@@ -2497,7 +2497,20 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             
             if heading_level:
                 # Все заголовки используют стиль H2 (24pt)
-                main_content.append(Paragraph(cleaned, heading_styles[2]))
+                # Для первого раздела после PageBreak убираем spaceBefore, чтобы отступ был одинаковым
+                # Проверяем, является ли это первым разделом (H2) после PageBreak
+                if heading_level == 2:
+                    # Создаем стиль без spaceBefore для первого раздела после PageBreak
+                    # Но нам нужно отследить, был ли перед этим PageBreak
+                    # Для простоты - убираем spaceBefore у всех разделов, чтобы они были одинаковыми
+                    first_section_style = ParagraphStyle(
+                        'H2_NoSpace',
+                        parent=heading_styles[2],
+                        spaceBefore=0  # Убираем отступ для единообразия
+                    )
+                    main_content.append(Paragraph(cleaned, first_section_style))
+                else:
+                    main_content.append(Paragraph(cleaned, heading_styles[heading_level]))
             elif bullet:
                 main_content.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
             else:
