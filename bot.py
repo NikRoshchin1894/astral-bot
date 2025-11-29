@@ -2468,15 +2468,22 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 # Космические символы для списков
                 bullet_char = "✦"
 
+            if not stripped:
+                continue  # Пропускаем пустые строки после обработки
+                
             cleaned = _clean_inline_markdown(stripped)
             
             # Для заголовков второго уровня (разделы) добавляем якорь для навигации
             if heading_level == 2:
                 # Генерируем имя для anchor из заголовка (должно совпадать с именем в ссылке)
-                anchor_name = _generate_anchor_name(stripped)
-                # В ReportLab якорь должен обернуть весь текст заголовка
-                # Используем полный тег <a name="...">текст</a>
-                cleaned = f'<a name="{anchor_name}">{cleaned}</a>'
+                try:
+                    anchor_name = _generate_anchor_name(stripped)
+                    # В ReportLab якорь должен обернуть весь текст заголовка
+                    # Используем полный тег <a name="...">текст</a>
+                    cleaned = f'<a name="{anchor_name}">{cleaned}</a>'
+                except Exception as anchor_error:
+                    logger.warning(f"Ошибка при создании якоря для заголовка '{stripped}': {anchor_error}")
+                    # Продолжаем без якоря, если не удалось его создать
             
             if heading_level and heading_level in heading_styles:
                 story.append(Paragraph(cleaned, heading_styles[heading_level]))
