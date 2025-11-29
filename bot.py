@@ -2396,7 +2396,8 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             # Создаем кликабельную ссылку в содержании
             # В ReportLab для внутренних ссылок используем простой синтаксис без вложенных тегов
             # Формат: <link destination="anchor_name">текст</link>
-            link_text = f'<link destination="{anchor_name}" color="#ffd700">• {cleaned_heading}</link>'
+            # Обертываем в <nobr> чтобы предотвратить разрыв ссылки по строкам
+            link_text = f'<nobr><link destination="{anchor_name}" color="#ffd700">{cleaned_heading}</link></nobr>'
             story.append(Paragraph(link_text, toc_item_style))
         
         # ===== РАЗРЫВ СТРАНИЦЫ =====
@@ -2488,9 +2489,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 # Генерируем имя для anchor из заголовка (должно совпадать с именем в ссылке)
                 try:
                     anchor_name = _generate_anchor_name(stripped)
-                    # В ReportLab тег <a> не поддерживает содержимое, используем самозакрывающийся тег перед текстом
-                    # Формат: <a name="..."/>текст
-                    cleaned = f'<a name="{anchor_name}"/>{cleaned}'
+                    # В ReportLab якорь создается через открывающий и закрывающий тег без содержимого перед текстом
+                    # Формат: <a name="..."></a>текст
+                    cleaned = f'<a name="{anchor_name}"></a>{cleaned}'
                 except Exception as anchor_error:
                     logger.warning(f"Ошибка при создании якоря для заголовка '{stripped}': {anchor_error}")
                     # Продолжаем без якоря, если не удалось его создать
