@@ -3370,13 +3370,18 @@ def generate_natal_chart_with_gpt(birth_data, api_key):
         # Пытаемся создать fallback PDF
         fallback_pdf = None
         try:
+            # Создаем минимальный markdown для fallback PDF
+            fallback_markdown = f"# Натальная карта: {birth_data.get('name', 'Пользователь')}\n\n{fallback_text}"
             fallback_pdf = generate_pdf_from_markdown(
-                fallback_text,
+                fallback_markdown,
                 f"Натальная карта: {birth_data.get('name', 'Пользователь')}",
                 fallback_chart_data
             )
         except Exception as pdf_error:
-            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось создать даже fallback PDF: {pdf_error}", exc_info=True)
+            error_type = type(pdf_error).__name__
+            error_message = str(pdf_error)
+            logger.error(f"❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось создать даже fallback PDF: {error_type}: {error_message}", exc_info=True)
+            logger.error(f"   Fallback markdown: {fallback_markdown[:100]}...")
             # Fallback PDF тоже не создался - это критическая ситуация
 
         return fallback_pdf, fallback_text
