@@ -2340,10 +2340,10 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         # Базовый стиль для вводного текста (с уменьшенными отступами между абзацами)
         intro_base_style = ParagraphStyle(
             'Intro_Base',
-            parent=base_style,
-            fontName=font_name,
+                parent=base_style, 
+                fontName=font_name,
             fontSize=15,
-            leading=24,
+                leading=24, 
             spaceAfter=14,  # Меньшие отступы между абзацами в статичном разделе
             textColor=cosmic_text,
             backColor=None,
@@ -2354,9 +2354,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         intro_numbered_style = ParagraphStyle(
             'Intro_Numbered',
             parent=intro_base_style,
-            fontName=font_name,
+                fontName=font_name,
             fontSize=15,
-            leading=24,
+                leading=24, 
             spaceBefore=20,
             spaceAfter=14,
             textColor=cosmic_gold,  # Золотой цвет как у заголовков
@@ -2493,17 +2493,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 
             cleaned = _clean_inline_markdown(stripped)
             
-            # Для заголовков второго уровня (разделы) добавляем якорь для навигации
-            if heading_level == 2:
-                # Генерируем имя для anchor из заголовка (должно совпадать с именем в ссылке)
-                try:
-                    anchor_name = _generate_anchor_name(stripped)
-                    # В ReportLab якорь создается через открывающий и закрывающий тег без содержимого перед текстом
-                    # Формат: <a name="..."></a>текст
-                    cleaned = f'<a name="{anchor_name}"></a>{cleaned}'
-                except Exception as anchor_error:
-                    logger.warning(f"Ошибка при создании якоря для заголовка '{stripped}': {anchor_error}")
-                    # Продолжаем без якоря, если не удалось его создать
+            # Якоря убраны - заголовки больше не имеют якорей для навигации
             
             if heading_level:
                 # Все заголовки используют стиль H2 (24pt)
@@ -2514,8 +2504,6 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 main_content.append(Paragraph(cleaned, base_style))
         
         # Теперь добавляем в story в правильном порядке: содержание -> вводный -> основной контент
-        # Якоря уже созданы в main_content (Paragraph объекты с тегами <a name="...">),
-        # поэтому когда они будут обработаны при doc.build(), якоря будут зарегистрированы
         
         # ===== СТРАНИЦА 2: СОДЕРЖАНИЕ =====
         # Извлекаем заголовки разделов для содержания
@@ -2550,22 +2538,27 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         story.append(Paragraph("<b>Содержание</b>", toc_title_style))
         story.append(Spacer(1, 20))
         
-        # Добавляем пункты содержания с кликабельными ссылками
-        # Используем тот же цвет что и заголовок "Содержание" (cosmic_gold = #F4D491)
-        gold_color_hex = '#F4D491'
+        # Добавляем пункты содержания (без кликабельных ссылок)
+        # Используем тот же цвет что и заголовок "Содержание" (cosmic_gold)
+        toc_item_style_gold = ParagraphStyle(
+            'TOC_Item_Gold',
+            parent=toc_item_style,
+            textColor=cosmic_gold,  # Золотой цвет как у заголовка "Содержание"
+        )
         for level, heading_text, anchor_name in section_headings:
             cleaned_heading = _clean_inline_markdown(heading_text)
-            # Создаем кликабельную ссылку в содержании
-            # В ReportLab тег <link> автоматически работает на весь текст, даже при переносе на несколько строк
-            # Формат: <link destination="anchor_name" color="color">текст</link>
-            # ReportLab автоматически делает всю ссылку кликабельной, включая все строки, на которые переносится текст
-            link_text = f'<link destination="{anchor_name}" color="{gold_color_hex}">{cleaned_heading}</link>'
-            story.append(Paragraph(link_text, toc_item_style))
+            # Обычный текст без ссылок
+            story.append(Paragraph(cleaned_heading, toc_item_style_gold))
         
         # ===== РАЗРЫВ СТРАНИЦЫ =====
         story.append(PageBreak())
         
         # ===== СТРАНИЦА 3: ВВОДНЫЙ ТЕКСТ =====
+        # Добавляем заголовок "Вводное слово"
+        intro_title_cleaned = _clean_inline_markdown("Вводное слово")
+        story.append(Paragraph(intro_title_cleaned, heading_styles[2]))  # Используем H2 стиль (24pt)
+        story.append(Spacer(1, 20))
+        
         # Добавляем вводный текст
         story.extend(intro_content)
         
