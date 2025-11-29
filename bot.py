@@ -2357,11 +2357,12 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         # ===== РАЗРЫВ СТРАНИЦЫ =====
         story.append(PageBreak())
         
-        # Сначала обрабатываем весь контент, чтобы создать якоря ДО создания содержания
+        # Сначала обрабатываем весь контент для создания Paragraph объектов с якорями
+        # Затем добавим их в story в правильном порядке (содержание -> вводный -> основной)
         main_content = []  # Основной контент с якорями
         intro_content = []  # Вводный текст
         
-        # ===== ВВОДНЫЙ ТЕКСТ =====
+        # Обрабатываем вводный текст
         intro_lines = INTRODUCTORY_TEXT.split('\n')
         for raw_line in intro_lines:
             line = raw_line.rstrip('\r')
@@ -2396,7 +2397,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             else:
                 intro_content.append(Paragraph(cleaned, base_style))
         
-        # ===== ОСНОВНОЙ КОНТЕНТ (создаем якоря) =====
+        # Обрабатываем основной контент для создания якорей
         for raw_line in lines:
             line = raw_line.rstrip('\r')
             if line.strip() == '[[PAGE_BREAK]]':
@@ -2455,16 +2456,10 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             else:
                 main_content.append(Paragraph(cleaned, base_style))
         
-        # В ReportLab якоря должны существовать ДО создания ссылок на них.
-        # Поэтому добавляем основной контент с якорями ПЕРЕД содержанием.
+        # Теперь добавляем в story в правильном порядке: содержание -> вводный -> основной контент
+        # Якоря уже созданы в main_content (Paragraph объекты с тегами <a name="...">),
+        # поэтому когда они будут обработаны при doc.build(), якоря будут зарегистрированы
         
-        # Добавляем основной контент с якорями сначала (чтобы якоря были зарегистрированы)
-        story.extend(main_content)
-        
-        # ===== РАЗРЫВ СТРАНИЦЫ =====
-        story.append(PageBreak())
-        
-        # Теперь создаем содержание со ссылками на уже существующие якоря
         # ===== СТРАНИЦА 2: СОДЕРЖАНИЕ =====
         # Извлекаем заголовки разделов для содержания
         section_headings = _extract_section_headings(markdown_text)
@@ -2514,6 +2509,13 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         # ===== СТРАНИЦА 3: ВВОДНЫЙ ТЕКСТ =====
         # Добавляем вводный текст
         story.extend(intro_content)
+        
+        # ===== РАЗРЫВ СТРАНИЦЫ =====
+        story.append(PageBreak())
+        
+        # ===== ОСНОВНОЙ КОНТЕНТ =====
+        # Добавляем основной контент с якорями
+        story.extend(main_content)
 
         if not story:
             story.append(Paragraph("Данные недоступны.", base_style))
