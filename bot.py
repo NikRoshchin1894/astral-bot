@@ -2337,14 +2337,14 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             ),
         }
         
-        # Базовый стиль для вводного текста (с уменьшенными отступами между абзацами)
+        # Базовый стиль для вводного текста (такие же отступы как в основном тексте)
         intro_base_style = ParagraphStyle(
             'Intro_Base',
                 parent=base_style, 
                 fontName=font_name,
             fontSize=15,
                 leading=24, 
-            spaceAfter=14,  # Меньшие отступы между абзацами в статичном разделе
+            spaceAfter=18,  # Одинаковые отступы между абзацами как в основном тексте
             textColor=cosmic_text,
             backColor=None,
             alignment=4  # Выравнивание по ширине
@@ -2354,11 +2354,11 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         intro_numbered_style = ParagraphStyle(
             'Intro_Numbered',
             parent=intro_base_style,
-                fontName=font_name,
+            fontName=font_name,
             fontSize=15,
-                leading=24, 
+            leading=24,
             spaceBefore=20,
-            spaceAfter=14,
+            spaceAfter=18,  # Одинаковые отступы между абзацами как в основном тексте
             textColor=cosmic_gold,  # Золотой цвет как у заголовков
             backColor=None,
             alignment=4  # Выравнивание по ширине
