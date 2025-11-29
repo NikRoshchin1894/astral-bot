@@ -2272,8 +2272,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 draw_static_natal_chart_image(canvas, doc, cosmic_gold)
                 first_page_drawn['flag'] = True
             
-            # Добавляем подпись страницы внизу (на всех страницах)
-            draw_page_footer(canvas, doc, document_title, page_count['num'], cosmic_gold, cosmic_text, font_name)
+            # Подпись страницы убрана со всех страниц
         
         # Создаём PageTemplate (всегда используем функцию с изображением, даже если chart_data нет)
         cosmic_template = PageTemplate(
