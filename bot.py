@@ -2139,40 +2139,9 @@ def draw_static_natal_chart_image(canvas, doc, gold_color):
         base_image_size = page_min_dimension / 2  # Было: половина страницы
         image_size = base_image_size * 0.825  # Уменьшено на 17.5% (15-20%)
         
-        # Центрируем изображение
+        # Центрируем изображение по горизонтали и вертикали (по центру страницы)
         image_x = (width - image_size) / 2
-        image_y = height - 200 - image_size  # Под заголовком и золотой линией (отступ 32-48px)
-        
-        # Рисуем золотую внутреннюю тень (glow эффект)
-        # Создаём несколько концентрических кругов с уменьшающейся прозрачностью
-        glow_radius = image_size * 0.55  # Немного больше изображения
-        glow_center_x = image_x + image_size / 2
-        glow_center_y = image_y + image_size / 2
-        
-        # Градиент тени (несколько слоёв)
-        for i in range(5):
-            alpha = 0.25 - (i * 0.04)  # От 25% до 5% прозрачности
-            radius = glow_radius + (i * 3)
-            canvas.setFillColor(gold_color)
-            canvas.setFillAlpha(alpha)
-            canvas.circle(glow_center_x, glow_center_y, radius, fill=1, stroke=0)
-        
-        # Мягкая тень вниз (ореол)
-        shadow_alpha = 0.15
-        shadow_offset = 8
-        canvas.setFillColor(HexColor('#000000'))
-        canvas.setFillAlpha(shadow_alpha)
-        shadow_ellipse_height = image_size * 0.3
-        canvas.ellipse(
-            image_x - 10, 
-            image_y - shadow_ellipse_height + shadow_offset, 
-            image_x + image_size + 10, 
-            image_y + shadow_offset,
-            fill=1, 
-            stroke=0
-        )
-        
-        canvas.setFillAlpha(1.0)
+        image_y = (height - image_size) / 2  # По центру страницы по вертикали
         
         # Загружаем и рисуем изображение с поддержкой прозрачности
         img = ImageReader(NATAL_CHART_IMAGE_PATH)
@@ -2298,25 +2267,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             
             # Рисуем статичное изображение только на первой странице
             if not first_page_drawn['flag']:
-                # Рисуем золотую линию под заголовком
-                # Заголовок: 36pt + leading 44pt, spaceAfter 32pt
-                # Позиция: от верха страницы (top_margin=84pt) + высота заголовка + отступ
-                width, height = A4
-                header_height = 44  # leading заголовка
-                header_spacing = 32  # spaceAfter заголовка
-                line_y = height - top_margin - header_height - header_spacing + 16  # Позиция линии
-                line_x_center = width / 2
-                line_length = 50  # 40-60px золотая линия (50pt)
-                
-                canvas.setStrokeColor(cosmic_gold)
-                canvas.setLineWidth(1.5)
-                canvas.line(
-                    line_x_center - line_length/2, 
-                    line_y, 
-                    line_x_center + line_length/2, 
-                    line_y
-                )
-                
+                # Убрана золотая линия под заголовком (чтобы не залезала на имя)
                 draw_static_natal_chart_image(canvas, doc, cosmic_gold)
                 first_page_drawn['flag'] = True
             
@@ -2386,22 +2337,37 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             ),
         }
         
-        # Стили заголовков для вводного текста (того же размера что и основной текст, но с цветовым выделением)
+        # Базовый стиль для вводного текста (с уменьшенными отступами между абзацами)
+        intro_base_style = ParagraphStyle(
+            'Intro_Base',
+            parent=base_style,
+            fontName=font_name,
+            fontSize=15,
+            leading=24,
+            spaceAfter=14,  # Меньшие отступы между абзацами в статичном разделе
+            textColor=cosmic_text,
+            backColor=None,
+            alignment=4  # Выравнивание по ширине
+        )
+        
+        # Стили заголовков для вводного текста
+        # H1 - такого же размера как в основных разделах (36pt)
+        # H2, H3 - того же размера что и основной текст (15pt) с цветовым выделением
         intro_heading_styles = {
             1: ParagraphStyle(
                 'Intro_H1', 
-                parent=base_style, 
-                fontSize=15,  # Тот же размер что и основной текст
-                leading=24,  # Межстрочный как у основного текста
-                spaceBefore=30, 
+                parent=intro_base_style, 
+                fontSize=36,  # Такой же размер как в основных разделах
+                leading=44,  # 36pt * 1.22 ≈ 44pt
+                spaceBefore=40, 
                 spaceAfter=18,
-                textColor=cosmic_gold,  # Сохраняем цветовое выделение
+                textColor=cosmic_gold,
                 fontName=font_name,
                 alignment=0
             ),
             2: ParagraphStyle(
                 'Intro_H2', 
-                parent=base_style, 
+                parent=intro_base_style, 
                 fontSize=15,  # Тот же размер что и основной текст
                 leading=24,  # Межстрочный как у основного текста
                 spaceBefore=24, 
@@ -2412,7 +2378,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             ),
             3: ParagraphStyle(
                 'Intro_H3', 
-                parent=base_style, 
+                parent=intro_base_style, 
                 fontSize=15,  # Тот же размер что и основной текст
                 leading=24,  # Межстрочный как у основного текста
                 spaceBefore=20, 
@@ -2442,15 +2408,12 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         if title:
             title_text = f"<b>{_clean_inline_markdown(title)}</b>"
             story.append(Paragraph(title_text, title_style))
-            # Золотая линия рисуется в функции onPage, поэтому не добавляем Spacer здесь
+            # Золотая линия убрана, изображение теперь по центру страницы
+            # Добавляем отступ для визуального баланса
+            story.append(Spacer(1, 30))
         
-        # Добавляем место для статичного изображения на первой странице
-        # Проверяем, существует ли изображение
-        if os.path.exists(NATAL_CHART_IMAGE_PATH):
-            width, height = A4
-            base_image_size = min(width, height) / 2
-            image_size = base_image_size * 0.825  # Уменьшено на 17.5% (15-20%)
-            story.append(Spacer(1, image_size + 48))  # Место для изображения + отступ 32-48px
+        # Изображение теперь рисуется по центру страницы в функции onPage
+        # Не нужно добавлять Spacer, так как изображение позиционируется абсолютно
         
         # ===== РАЗРЫВ СТРАНИЦЫ =====
         story.append(PageBreak())
@@ -2491,9 +2454,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             if heading_level and heading_level in intro_heading_styles:
                 intro_content.append(Paragraph(cleaned, intro_heading_styles[heading_level]))
             elif bullet:
-                intro_content.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
+                intro_content.append(Paragraph(f"{bullet_char} {cleaned}", intro_base_style))
             else:
-                intro_content.append(Paragraph(cleaned, base_style))
+                intro_content.append(Paragraph(cleaned, intro_base_style))
         
         # Обрабатываем основной контент для создания якорей
         for raw_line in lines:
@@ -2592,13 +2555,15 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         story.append(Spacer(1, 20))
         
         # Добавляем пункты содержания с кликабельными ссылками
+        # Используем тот же цвет что и заголовок "Содержание" (cosmic_gold = #F4D491)
+        gold_color_hex = '#F4D491'
         for level, heading_text, anchor_name in section_headings:
             cleaned_heading = _clean_inline_markdown(heading_text)
             # Создаем кликабельную ссылку в содержании
             # В ReportLab тег <link> автоматически работает на весь текст, даже при переносе на несколько строк
             # Формат: <link destination="anchor_name" color="color">текст</link>
             # ReportLab автоматически делает всю ссылку кликабельной, включая все строки, на которые переносится текст
-            link_text = f'<link destination="{anchor_name}" color="#ffd700">{cleaned_heading}</link>'
+            link_text = f'<link destination="{anchor_name}" color="{gold_color_hex}">{cleaned_heading}</link>'
             story.append(Paragraph(link_text, toc_item_style))
         
         # ===== РАЗРЫВ СТРАНИЦЫ =====
