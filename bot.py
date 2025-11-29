@@ -2454,12 +2454,21 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 continue
 
             stripped = line.lstrip()
+            
+            # Пропускаем пустые строки СРАЗУ, до любой обработки
+            if not stripped:
+                continue
+            
             heading_level = 0
             if stripped.startswith('#'):
                 heading_level = len(stripped) - len(stripped.lstrip('#'))
                 stripped = stripped.lstrip('#').strip()
                 
                 # Убраны символы ✦ из заголовков
+                
+                # Проверяем, что после удаления # остался текст
+                if not stripped:
+                    continue
 
             bullet = False
             if stripped.startswith(('- ', '* ', '+ ')):
@@ -2467,9 +2476,10 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 stripped = stripped[2:].strip()
                 # Космические символы для списков
                 bullet_char = "✦"
-
-            if not stripped:
-                continue  # Пропускаем пустые строки после обработки
+                
+                # Проверяем, что после удаления маркера остался текст
+                if not stripped:
+                    continue
                 
             cleaned = _clean_inline_markdown(stripped)
             
@@ -2478,9 +2488,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 # Генерируем имя для anchor из заголовка (должно совпадать с именем в ссылке)
                 try:
                     anchor_name = _generate_anchor_name(stripped)
-                    # В ReportLab якорь должен обернуть весь текст заголовка
-                    # Используем полный тег <a name="...">текст</a>
-                    cleaned = f'<a name="{anchor_name}">{cleaned}</a>'
+                    # В ReportLab тег <a> не поддерживает содержимое, используем самозакрывающийся тег перед текстом
+                    # Формат: <a name="..."/>текст
+                    cleaned = f'<a name="{anchor_name}"/>{cleaned}'
                 except Exception as anchor_error:
                     logger.warning(f"Ошибка при создании якоря для заголовка '{stripped}': {anchor_error}")
                     # Продолжаем без якоря, если не удалось его создать
