@@ -2357,59 +2357,16 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         # ===== РАЗРЫВ СТРАНИЦЫ =====
         story.append(PageBreak())
         
-        # ===== СТРАНИЦА 2: СОДЕРЖАНИЕ =====
-        # Извлекаем заголовки разделов для содержания
-        section_headings = _extract_section_headings(markdown_text)
+        # Сначала обрабатываем весь контент, чтобы создать якоря ДО создания содержания
+        main_content = []  # Основной контент с якорями
+        intro_content = []  # Вводный текст
         
-        # Стиль для заголовка "Содержание"
-        toc_title_style = ParagraphStyle(
-            'TOC_Title',
-            parent=base_style,
-            fontSize=24,
-            leading=30,
-            spaceBefore=20,
-            spaceAfter=20,
-            textColor=cosmic_gold,
-            fontName=font_name,
-            alignment=1  # По центру
-        )
-        
-        story.append(Paragraph("<b>Содержание</b>", toc_title_style))
-        story.append(Spacer(1, 20))
-        
-        # Стиль для пунктов содержания
-        toc_item_style = ParagraphStyle(
-            'TOC_Item',
-            parent=base_style,
-            fontSize=16,
-            leading=24,
-            spaceAfter=10,
-            textColor=cosmic_text,
-            fontName=font_name,
-            alignment=0,  # По левому краю
-            leftIndent=0
-        )
-        
-        # Добавляем пункты содержания с кликабельными ссылками
-        for level, heading_text, anchor_name in section_headings:
-            cleaned_heading = _clean_inline_markdown(heading_text)
-            # Создаем кликабельную ссылку в содержании
-            # В ReportLab для внутренних ссылок используем простой синтаксис без вложенных тегов
-            # Формат: <link destination="anchor_name">текст</link>
-            # Обертываем в <nobr> чтобы предотвратить разрыв ссылки по строкам
-            link_text = f'<nobr><link destination="{anchor_name}" color="#ffd700">{cleaned_heading}</link></nobr>'
-            story.append(Paragraph(link_text, toc_item_style))
-        
-        # ===== РАЗРЫВ СТРАНИЦЫ =====
-        story.append(PageBreak())
-        
-        # ===== СТРАНИЦА 3: ВВОДНЫЙ ТЕКСТ =====
-        # Добавляем вводный текст
+        # ===== ВВОДНЫЙ ТЕКСТ =====
         intro_lines = INTRODUCTORY_TEXT.split('\n')
         for raw_line in intro_lines:
             line = raw_line.rstrip('\r')
             if not line.strip():
-                story.append(Spacer(1, 10))
+                intro_content.append(Spacer(1, 10))
                 continue
             
             stripped = line.lstrip()
@@ -2433,25 +2390,20 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             
             cleaned = _clean_inline_markdown(stripped)
             if heading_level and heading_level in intro_heading_styles:
-                # Для вводного текста используем стили с тем же размером шрифта, что и основной текст
-                story.append(Paragraph(cleaned, intro_heading_styles[heading_level]))
+                intro_content.append(Paragraph(cleaned, intro_heading_styles[heading_level]))
             elif bullet:
-                story.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
+                intro_content.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
             else:
-                story.append(Paragraph(cleaned, base_style))
+                intro_content.append(Paragraph(cleaned, base_style))
         
-        # ===== РАЗРЫВ СТРАНИЦЫ =====
-        story.append(PageBreak())
-        
-        # ===== ОСНОВНОЙ КОНТЕНТ =====
-        # Обработка содержимого с космическим форматированием
+        # ===== ОСНОВНОЙ КОНТЕНТ (создаем якоря) =====
         for raw_line in lines:
             line = raw_line.rstrip('\r')
             if line.strip() == '[[PAGE_BREAK]]':
-                story.append(PageBreak())
+                main_content.append(PageBreak())
                 continue
             if not line.strip():
-                story.append(Spacer(1, 10))
+                main_content.append(Spacer(1, 10))
                 continue
 
             stripped = line.lstrip()
@@ -2497,11 +2449,71 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                     # Продолжаем без якоря, если не удалось его создать
             
             if heading_level and heading_level in heading_styles:
-                story.append(Paragraph(cleaned, heading_styles[heading_level]))
+                main_content.append(Paragraph(cleaned, heading_styles[heading_level]))
             elif bullet:
-                story.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
+                main_content.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
             else:
-                story.append(Paragraph(cleaned, base_style))
+                main_content.append(Paragraph(cleaned, base_style))
+        
+        # В ReportLab якоря должны существовать ДО создания ссылок на них.
+        # Поэтому добавляем основной контент с якорями ПЕРЕД содержанием.
+        
+        # Добавляем основной контент с якорями сначала (чтобы якоря были зарегистрированы)
+        story.extend(main_content)
+        
+        # ===== РАЗРЫВ СТРАНИЦЫ =====
+        story.append(PageBreak())
+        
+        # Теперь создаем содержание со ссылками на уже существующие якоря
+        # ===== СТРАНИЦА 2: СОДЕРЖАНИЕ =====
+        # Извлекаем заголовки разделов для содержания
+        section_headings = _extract_section_headings(markdown_text)
+        
+        # Стиль для заголовка "Содержание"
+        toc_title_style = ParagraphStyle(
+            'TOC_Title',
+            parent=base_style,
+            fontSize=24,
+            leading=30,
+            spaceBefore=20,
+            spaceAfter=20,
+            textColor=cosmic_gold,
+            fontName=font_name,
+            alignment=1  # По центру
+        )
+        
+        # Стиль для пунктов содержания
+        toc_item_style = ParagraphStyle(
+            'TOC_Item',
+            parent=base_style,
+            fontSize=16,
+            leading=24,
+            spaceAfter=10,
+            textColor=cosmic_text,
+            fontName=font_name,
+            alignment=0,  # По левому краю
+            leftIndent=0
+        )
+        
+        story.append(Paragraph("<b>Содержание</b>", toc_title_style))
+        story.append(Spacer(1, 20))
+        
+        # Добавляем пункты содержания с кликабельными ссылками
+        for level, heading_text, anchor_name in section_headings:
+            cleaned_heading = _clean_inline_markdown(heading_text)
+            # Создаем кликабельную ссылку в содержании
+            # В ReportLab тег <link> автоматически работает на весь текст, даже при переносе на несколько строк
+            # Формат: <link destination="anchor_name" color="color">текст</link>
+            # ReportLab автоматически делает всю ссылку кликабельной, включая все строки, на которые переносится текст
+            link_text = f'<link destination="{anchor_name}" color="#ffd700">{cleaned_heading}</link>'
+            story.append(Paragraph(link_text, toc_item_style))
+        
+        # ===== РАЗРЫВ СТРАНИЦЫ =====
+        story.append(PageBreak())
+        
+        # ===== СТРАНИЦА 3: ВВОДНЫЙ ТЕКСТ =====
+        # Добавляем вводный текст
+        story.extend(intro_content)
 
         if not story:
             story.append(Paragraph("Данные недоступны.", base_style))
