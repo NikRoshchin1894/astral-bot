@@ -2350,6 +2350,20 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             alignment=4  # Выравнивание по ширине
         )
         
+        # Стиль для пронумерованных пунктов в статичном тексте (обычный текст с золотым цветом)
+        intro_numbered_style = ParagraphStyle(
+            'Intro_Numbered',
+            parent=intro_base_style,
+            fontName=font_name,
+            fontSize=15,
+            leading=24,
+            spaceBefore=20,
+            spaceAfter=14,
+            textColor=cosmic_gold,  # Золотой цвет как у заголовков
+            backColor=None,
+            alignment=4  # Выравнивание по ширине
+        )
+        
         # Стили заголовков для вводного текста - используем те же стили что и в основном тексте
         intro_heading_styles = {
             1: heading_styles[1],  # H1 - тот же стиль что и для основных разделов (36pt)
@@ -2406,11 +2420,19 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 continue
             
             heading_level = 0
+            is_numbered_item = False
+            
             if stripped.startswith('#'):
                 heading_level = len(stripped) - len(stripped.lstrip('#'))
                 stripped = stripped.lstrip('#').strip()
                 
                 # Убраны символы ✦ из заголовков
+                
+                # Проверяем, является ли это пронумерованным пунктом (например "4. Разбор не заменяет")
+                # Паттерн: начинается с цифры и точки
+                if re.match(r'^\d+\.\s', stripped):
+                    is_numbered_item = True
+                    heading_level = 0  # Не обрабатываем как заголовок
             
             bullet = False
             if stripped.startswith(('- ', '* ', '+ ')):
@@ -2419,8 +2441,13 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 bullet_char = "✦"
             
             cleaned = _clean_inline_markdown(stripped)
-            if heading_level and heading_level in intro_heading_styles:
-                intro_content.append(Paragraph(cleaned, intro_heading_styles[heading_level]))
+            
+            if is_numbered_item:
+                # Пронумерованные пункты - обычный текст с золотым цветом (15pt)
+                intro_content.append(Paragraph(cleaned, intro_numbered_style))
+            elif heading_level:
+                # Все заголовки используют стиль H2 (24pt)
+                intro_content.append(Paragraph(cleaned, heading_styles[2]))
             elif bullet:
                 intro_content.append(Paragraph(f"{bullet_char} {cleaned}", intro_base_style))
             else:
@@ -2478,8 +2505,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                     logger.warning(f"Ошибка при создании якоря для заголовка '{stripped}': {anchor_error}")
                     # Продолжаем без якоря, если не удалось его создать
             
-            if heading_level and heading_level in heading_styles:
-                main_content.append(Paragraph(cleaned, heading_styles[heading_level]))
+            if heading_level:
+                # Все заголовки используют стиль H2 (24pt)
+                main_content.append(Paragraph(cleaned, heading_styles[2]))
             elif bullet:
                 main_content.append(Paragraph(f"{bullet_char} {cleaned}", base_style))
             else:
