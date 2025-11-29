@@ -2392,9 +2392,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         for level, heading_text, anchor_name in section_headings:
             cleaned_heading = _clean_inline_markdown(heading_text)
             # Создаем кликабельную ссылку в содержании
-            # Используем упрощенный синтаксис для внутренних ссылок ReportLab
-            # Без вложенных тегов для лучшей совместимости
-            link_text = f'<link destination="{anchor_name}" color="#ffd700"><u>• {cleaned_heading}</u></link>'
+            # В ReportLab для внутренних ссылок используем простой синтаксис без вложенных тегов
+            # Формат: <link destination="anchor_name">текст</link>
+            link_text = f'<link destination="{anchor_name}" color="#ffd700">• {cleaned_heading}</link>'
             story.append(Paragraph(link_text, toc_item_style))
         
         # ===== РАЗРЫВ СТРАНИЦЫ =====
