@@ -2392,7 +2392,8 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         for level, heading_text, anchor_name in section_headings:
             cleaned_heading = _clean_inline_markdown(heading_text)
             # Создаем кликабельную ссылку в содержании
-            # Используем тег <link> для создания внутренней ссылки
+            # Используем упрощенный синтаксис для внутренних ссылок ReportLab
+            # Без вложенных тегов для лучшей совместимости
             link_text = f'<link destination="{anchor_name}" color="#ffd700"><u>• {cleaned_heading}</u></link>'
             story.append(Paragraph(link_text, toc_item_style))
         
@@ -2456,14 +2457,6 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 heading_level = len(stripped) - len(stripped.lstrip('#'))
                 stripped = stripped.lstrip('#').strip()
                 
-                # Для заголовков второго уровня (разделы) добавляем якорь для навигации
-                # Используем тег <a name="..."> в самом заголовке
-                if heading_level == 2:
-                    # Генерируем имя для anchor из заголовка
-                    anchor_name = _generate_anchor_name(stripped)
-                    # Добавляем якорь в начало заголовка через тег <a name="...">
-                    stripped = f'<a name="{anchor_name}"/>{stripped}'
-                
                 # Убраны символы ✦ из заголовков
 
             bullet = False
@@ -2474,6 +2467,15 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 bullet_char = "✦"
 
             cleaned = _clean_inline_markdown(stripped)
+            
+            # Для заголовков второго уровня (разделы) добавляем якорь для навигации
+            if heading_level == 2:
+                # Генерируем имя для anchor из заголовка (должно совпадать с именем в ссылке)
+                anchor_name = _generate_anchor_name(stripped)
+                # В ReportLab якорь должен обернуть весь текст заголовка
+                # Используем полный тег <a name="...">текст</a>
+                cleaned = f'<a name="{anchor_name}">{cleaned}</a>'
+            
             if heading_level and heading_level in heading_styles:
                 story.append(Paragraph(cleaned, heading_styles[heading_level]))
             elif bullet:
