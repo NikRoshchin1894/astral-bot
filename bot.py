@@ -2342,7 +2342,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             fontName=font_name,
             fontSize=15,  # 15pt согласно premium дизайну
             leading=24,  # 15pt * 1.6 = 24pt (межстрочный 1.6)
-            spaceAfter=24,  # 22-26px между абзацами (24pt)
+            spaceAfter=18,  # Уменьшенные отступы между абзацами (18pt вместо 24pt)
             textColor=cosmic_text,
             backColor=None,
             alignment=4  # 4 = TA_JUSTIFY (выравнивание по ширине)
@@ -2386,38 +2386,38 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             ),
         }
         
-        # Стили заголовков для вводного текста (Premium дизайн)
+        # Стили заголовков для вводного текста (того же размера что и основной текст, но с цветовым выделением)
         intro_heading_styles = {
             1: ParagraphStyle(
                 'Intro_H1', 
                 parent=base_style, 
-                fontSize=36,  # 36pt как и основные заголовки H1
-                leading=44, 
-                spaceBefore=40, 
+                fontSize=15,  # Тот же размер что и основной текст
+                leading=24,  # Межстрочный как у основного текста
+                spaceBefore=30, 
                 spaceAfter=18,
-                textColor=cosmic_gold,
+                textColor=cosmic_gold,  # Сохраняем цветовое выделение
                 fontName=font_name,
                 alignment=0
             ),
             2: ParagraphStyle(
                 'Intro_H2', 
                 parent=base_style, 
-                fontSize=24,  # 24pt для подзаголовков
-                leading=30, 
-                spaceBefore=30, 
+                fontSize=15,  # Тот же размер что и основной текст
+                leading=24,  # Межстрочный как у основного текста
+                spaceBefore=24, 
                 spaceAfter=16,
-                textColor=cosmic_gold,
+                textColor=cosmic_gold,  # Сохраняем цветовое выделение
                 fontName=font_name,
                 alignment=0
             ),
             3: ParagraphStyle(
                 'Intro_H3', 
                 parent=base_style, 
-                fontSize=18,  # 18pt для подзаголовков третьего уровня
-                leading=26, 
-                spaceBefore=24, 
+                fontSize=15,  # Тот же размер что и основной текст
+                leading=24,  # Межстрочный как у основного текста
+                spaceBefore=20, 
                 spaceAfter=14,
-                textColor=cosmic_silver,
+                textColor=cosmic_silver,  # Сохраняем цветовое выделение
                 fontName=font_name,
                 alignment=0
             ),
