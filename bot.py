@@ -1913,56 +1913,55 @@ def _extract_summary(markdown_text: str) -> Optional[str]:
 
 
 def draw_cosmic_background(canvas, doc):
-    """Рисует космический фон со звёздами для каждой страницы"""
-    # Космические цвета
-    dark_blue = HexColor('#0a0e27')  # Тёмно-синий космос
-    deep_purple = HexColor('#1a1a3e')  # Глубокий фиолетовый
-    star_gold = HexColor('#ffd700')  # Золотые звёзды
-    star_silver = HexColor('#c0c0c0')  # Серебристые звёзды
-    nebula_purple = HexColor('#6b3fa0')  # Туманность фиолетовая
-    nebula_blue = HexColor('#2d5aa0')  # Туманность синяя
+    """Рисует премиум космический фон со звёздами для каждой страницы (Premium Astro Style)"""
+    # Premium цветовая палитра
+    dark_cosmic = HexColor('#0A0F1F')  # Тёмно-синий космический
+    deep_blue_violet = HexColor('#151B2D')  # Сине-фиолетовый глубокий
+    gold_metallic = HexColor('#F4D491')  # Золотой металлический (светлый)
+    gold_metallic_dark = HexColor('#CDAF6D')  # Золотой металлический (тёмный)
+    lunar_silver = HexColor('#C8D0E2')  # Лунный серебристый
+    warm_beige = HexColor('#F8F4E9')  # Тёплый светлый беж
+    shadow_dark_1 = HexColor('#101629')  # Тень слева сверху
+    shadow_dark_2 = HexColor('#0D1321')  # Тень справа снизу
     
     width, height = A4
     
-    # Градиентный фон (от тёмного к чуть светлее)
-    canvas.setFillColor(dark_blue)
+    # Основной фон
+    canvas.setFillColor(dark_cosmic)
     canvas.rect(0, 0, width, height, fill=1, stroke=0)
     
-    # Добавляем туманность (градиентные круги)
-    canvas.setFillColor(nebula_purple)
-    canvas.setFillAlpha(0.15)
-    canvas.circle(width * 0.2, height * 0.8, width * 0.3, fill=1, stroke=0)
+    # Градиентные тени для 3D-эффекта
+    # Тень слева сверху
+    canvas.setFillColor(shadow_dark_1)
+    canvas.setFillAlpha(0.4)
+    canvas.circle(width * 0.15, height * 0.85, width * 0.5, fill=1, stroke=0)
     
-    canvas.setFillColor(nebula_blue)
-    canvas.setFillAlpha(0.1)
-    canvas.circle(width * 0.8, height * 0.2, width * 0.4, fill=1, stroke=0)
+    # Тень справа снизу
+    canvas.setFillColor(shadow_dark_2)
+    canvas.setFillAlpha(0.4)
+    canvas.circle(width * 0.85, height * 0.15, width * 0.5, fill=1, stroke=0)
     
     canvas.setFillAlpha(1.0)
     
-    # Рисуем звёзды
+    # Уменьшенное количество звёзд (20-25 крупных вместо 80)
     random.seed(42)  # Для одинаковых звёзд на всех страницах
-    for _ in range(80):
+    for _ in range(25):
         x = random.uniform(0, width)
         y = random.uniform(0, height)
-        star_size = random.choice([1, 1.5, 2])
-        star_color = random.choice([star_gold, star_silver])
+        # Крупные звёзды (2-3px)
+        star_size = random.choice([2.0, 2.5, 3.0])
+        star_color = random.choice([gold_metallic, lunar_silver])
         
         canvas.setFillColor(star_color)
-        canvas.setFillAlpha(random.uniform(0.6, 1.0))
+        # Некоторые звёзды с размытием для глубины
+        if random.random() < 0.3:  # 30% звёзд с размытием
+            canvas.setFillAlpha(0.4)
+            canvas.circle(x, y, star_size * 1.5, fill=1, stroke=0)
+        
+        canvas.setFillAlpha(random.uniform(0.7, 1.0))
         canvas.circle(x, y, star_size, fill=1, stroke=0)
     
     canvas.setFillAlpha(1.0)
-    
-    # Декоративные линии по краям (космические поля)
-    canvas.setStrokeColor(HexColor('#1a4a6a'))
-    canvas.setStrokeAlpha(0.3)
-    canvas.setLineWidth(1)
-    # Верхняя линия
-    canvas.line(0, height - 20, width, height - 20)
-    # Нижняя линия
-    canvas.line(0, 20, width, 20)
-    
-    canvas.setStrokeAlpha(1.0)
 
 
 # Путь к статичному изображению натальной карты
@@ -2124,8 +2123,8 @@ def _generate_anchor_name(heading_text: str) -> str:
     return f"section_{abs(hash(cleaned)) % 10000}"
 
 
-def draw_static_natal_chart_image(canvas, doc):
-    """Рисует статичное изображение натальной карты на первой странице (половина страницы, прозрачный фон)"""
+def draw_static_natal_chart_image(canvas, doc, gold_color):
+    """Рисует статичное изображение натальной карты на первой странице (Premium Astro Style)"""
     if not os.path.exists(NATAL_CHART_IMAGE_PATH):
         # Если изображение не найдено, просто пропускаем (не критично)
         return
@@ -2135,13 +2134,45 @@ def draw_static_natal_chart_image(canvas, doc):
         
         width, height = A4
         
-        # Размер изображения - половина страницы по меньшей стороне
+        # Размер изображения уменьшен на 15-20% от исходного размера
         page_min_dimension = min(width, height)
-        image_size = page_min_dimension / 2  # Половина страницы
+        base_image_size = page_min_dimension / 2  # Было: половина страницы
+        image_size = base_image_size * 0.825  # Уменьшено на 17.5% (15-20%)
         
         # Центрируем изображение
         image_x = (width - image_size) / 2
-        image_y = height - 140 - image_size  # Под заголовком (уменьшен отступ)
+        image_y = height - 200 - image_size  # Под заголовком и золотой линией (отступ 32-48px)
+        
+        # Рисуем золотую внутреннюю тень (glow эффект)
+        # Создаём несколько концентрических кругов с уменьшающейся прозрачностью
+        glow_radius = image_size * 0.55  # Немного больше изображения
+        glow_center_x = image_x + image_size / 2
+        glow_center_y = image_y + image_size / 2
+        
+        # Градиент тени (несколько слоёв)
+        for i in range(5):
+            alpha = 0.25 - (i * 0.04)  # От 25% до 5% прозрачности
+            radius = glow_radius + (i * 3)
+            canvas.setFillColor(gold_color)
+            canvas.setFillAlpha(alpha)
+            canvas.circle(glow_center_x, glow_center_y, radius, fill=1, stroke=0)
+        
+        # Мягкая тень вниз (ореол)
+        shadow_alpha = 0.15
+        shadow_offset = 8
+        canvas.setFillColor(HexColor('#000000'))
+        canvas.setFillAlpha(shadow_alpha)
+        shadow_ellipse_height = image_size * 0.3
+        canvas.ellipse(
+            image_x - 10, 
+            image_y - shadow_ellipse_height + shadow_offset, 
+            image_x + image_size + 10, 
+            image_y + shadow_offset,
+            fill=1, 
+            stroke=0
+        )
+        
+        canvas.setFillAlpha(1.0)
         
         # Загружаем и рисуем изображение с поддержкой прозрачности
         img = ImageReader(NATAL_CHART_IMAGE_PATH)
@@ -2158,6 +2189,43 @@ def draw_static_natal_chart_image(canvas, doc):
         )
     except Exception as e:
         logger.warning(f"Не удалось отобразить изображение натальной карты: {e}")
+
+
+def draw_page_footer(canvas, doc, title, page_num, gold_color, text_color, font_name):
+    """Рисует подпись страницы внизу (Premium Astro Style)"""
+    try:
+        width, height = A4
+        footer_y = 40  # Отступ от низа страницы
+        
+        # Извлекаем имя пользователя из заголовка
+        user_name = "Пользователь"
+        if title and ":" in title:
+            user_name = title.split(":", 1)[1].strip()
+        
+        # Текущая дата
+        from datetime import datetime
+        current_date = datetime.now().strftime("%d.%m.%Y")
+        
+        # Подпись (мелким шрифтом, используем font_name для поддержки кириллицы)
+        canvas.setFillColor(text_color)
+        canvas.setFont(font_name, 9)
+        
+        # Левая часть: имя пользователя
+        footer_text_left = f"Создано специально для {user_name}"
+        canvas.drawString(80, footer_y, footer_text_left)
+        
+        # Правая часть: название бота и дата
+        footer_text_right = f"Astrology_bot • {current_date}"
+        text_width = canvas.stringWidth(footer_text_right, font_name, 9)
+        canvas.drawString(width - 80 - text_width, footer_y, footer_text_right)
+        
+        # Тонкая золотая линия над подписью
+        canvas.setStrokeColor(gold_color)
+        canvas.setLineWidth(0.5)
+        canvas.line(80, footer_y + 12, width - 80, footer_y + 12)
+        
+    except Exception as e:
+        logger.warning(f"Не удалось нарисовать подпись страницы: {e}")
 
 
 def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optional[dict] = None) -> Optional[str]:
@@ -2179,18 +2247,21 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         fd, temp_path = tempfile.mkstemp(suffix='.pdf')
         os.close(fd)
 
-        # Космические цвета
-        cosmic_text = HexColor('#e8e8f0')  # Светлый текст на тёмном фоне
-        cosmic_gold = HexColor('#ffd700')  # Золотой для заголовков
-        cosmic_silver = HexColor('#b0b0d0')  # Серебристый для подзаголовков
-        cosmic_accent = HexColor('#9b59b6')  # Фиолетовый акцент
+        # Premium цветовая палитра
+        cosmic_text = HexColor('#EAE6D9')  # Мягкий кремовый текст
+        cosmic_gold = HexColor('#F4D491')  # Золотой металлический (светлый)
+        cosmic_gold_dark = HexColor('#CDAF6D')  # Золотой металлический (тёмный, для градиентов)
+        cosmic_silver = HexColor('#C8D0E2')  # Лунный серебристый
+        cosmic_accent = HexColor('#151B2D')  # Сине-фиолетовый глубокий
         
         # Используем BaseDocTemplate для кастомного PageTemplate
         width, height = A4
-        left_margin = 80  # Увеличены отступы слева
-        right_margin = 80  # Увеличены отступы справа
-        top_margin = 60
-        bottom_margin = 60
+        # Premium дизайн: ширина колонки 600-650px при A4 (595x842 pt)
+        # Для колонки 600-650px (213-230 pt) нужны отступы примерно 75-85pt с каждой стороны
+        left_margin = 80  # Отступ для колонки ~600px
+        right_margin = 80
+        top_margin = 84  # Верхний отступ 84px согласно дизайну
+        bottom_margin = 80  # Увеличен для подписи страницы внизу
         
         doc = BaseDocTemplate(
             temp_path,
@@ -2215,16 +2286,42 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             id='cosmic_frame'
         )
         
-        # Переменная для отслеживания первой страницы
+        # Переменные для отслеживания состояния страниц
         first_page_drawn = {'flag': False}
+        page_count = {'num': 0}
+        document_title = title  # Сохраняем для подписи страницы
         
-        # Универсальная функция для всех страниц (рисует статичное изображение только на первой)
+        # Универсальная функция для всех страниц (Premium Astro Style)
         def page_template_with_image(canvas, doc):
             draw_cosmic_background(canvas, doc)
+            page_count['num'] += 1
+            
             # Рисуем статичное изображение только на первой странице
             if not first_page_drawn['flag']:
-                draw_static_natal_chart_image(canvas, doc)
+                # Рисуем золотую линию под заголовком
+                # Заголовок: 36pt + leading 44pt, spaceAfter 32pt
+                # Позиция: от верха страницы (top_margin=84pt) + высота заголовка + отступ
+                width, height = A4
+                header_height = 44  # leading заголовка
+                header_spacing = 32  # spaceAfter заголовка
+                line_y = height - top_margin - header_height - header_spacing + 16  # Позиция линии
+                line_x_center = width / 2
+                line_length = 50  # 40-60px золотая линия (50pt)
+                
+                canvas.setStrokeColor(cosmic_gold)
+                canvas.setLineWidth(1.5)
+                canvas.line(
+                    line_x_center - line_length/2, 
+                    line_y, 
+                    line_x_center + line_length/2, 
+                    line_y
+                )
+                
+                draw_static_natal_chart_image(canvas, doc, cosmic_gold)
                 first_page_drawn['flag'] = True
+            
+            # Добавляем подпись страницы внизу (на всех страницах)
+            draw_page_footer(canvas, doc, document_title, page_count['num'], cosmic_gold, cosmic_text, font_name)
         
         # Создаём PageTemplate (всегда используем функцию с изображением, даже если chart_data нет)
         cosmic_template = PageTemplate(
@@ -2237,103 +2334,103 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
 
         styles = getSampleStyleSheet()
         
-        # Базовый стиль с космическим цветом текста и выравниванием по ширине
+        # Базовый стиль с premium типографикой
+        # Межстрочный интервал 1.55-1.65 при размере 15-16pt
         base_style = ParagraphStyle(
             'Base',
             parent=styles['Normal'],
             fontName=font_name,
-            fontSize=16,
-            leading=24,
-            spaceAfter=8,
+            fontSize=15,  # 15pt согласно premium дизайну
+            leading=24,  # 15pt * 1.6 = 24pt (межстрочный 1.6)
+            spaceAfter=24,  # 22-26px между абзацами (24pt)
             textColor=cosmic_text,
             backColor=None,
             alignment=4  # 4 = TA_JUSTIFY (выравнивание по ширине)
         )
         
-        # Заголовки с космическим оформлением
+        # Premium заголовки (Serif premium стиль, но используем доступные шрифты)
         heading_styles = {
             1: ParagraphStyle(
                 'H1', 
                 parent=base_style, 
-                fontSize=24, 
-                leading=30, 
-                spaceBefore=20, 
-                spaceAfter=12,
+                fontSize=36,  # 36pt для заголовка согласно premium дизайну
+                leading=44,  # 36pt * 1.22 ≈ 44pt
+                spaceBefore=60,  # 60-80px между разделами
+                spaceAfter=20,
                 textColor=cosmic_gold,
                 fontName=font_name,
-                alignment=0  # 0 = TA_LEFT (по левому краю для заголовков)
+                alignment=0,  # По левому краю
+                # letterSpacing не поддерживается в ReportLab, но можно эмулировать через пробелы
             ),
             2: ParagraphStyle(
                 'H2', 
                 parent=base_style, 
-                fontSize=20, 
-                leading=26, 
-                spaceBefore=16, 
-                spaceAfter=10,
+                fontSize=24,  # 24pt для подзаголовков
+                leading=30,  # 24pt * 1.25 = 30pt
+                spaceBefore=40,  # Отступ перед подзаголовком
+                spaceAfter=18,
                 textColor=cosmic_gold,
                 fontName=font_name,
-                alignment=0  # По левому краю для заголовков
+                alignment=0  # По левому краю
             ),
             3: ParagraphStyle(
                 'H3', 
                 parent=base_style, 
-                fontSize=17, 
-                leading=22, 
-                spaceBefore=14, 
-                spaceAfter=8,
+                fontSize=18,  # Немного больше базового текста
+                leading=26,  # 18pt * 1.44 = 26pt
+                spaceBefore=24,
+                spaceAfter=14,
                 textColor=cosmic_silver,
                 fontName=font_name,
-                alignment=0  # По левому краю для подзаголовков
+                alignment=0  # По левому краю
             ),
         }
         
-        # Стили заголовков для вводного текста
-        # Заголовки первого уровня (без цифр) используют тот же размер, что и в основном документе
-        # Заголовки второго и третьего уровня используют размер основного текста
+        # Стили заголовков для вводного текста (Premium дизайн)
         intro_heading_styles = {
             1: ParagraphStyle(
                 'Intro_H1', 
                 parent=base_style, 
-                fontSize=24,  # Тот же размер, что и заголовки H1 в основном документе
-                leading=30, 
-                spaceBefore=20, 
-                spaceAfter=12,
-                textColor=cosmic_gold,  # Сохраняем цветовое выделение
+                fontSize=36,  # 36pt как и основные заголовки H1
+                leading=44, 
+                spaceBefore=40, 
+                spaceAfter=18,
+                textColor=cosmic_gold,
                 fontName=font_name,
-                alignment=0  # По левому краю
+                alignment=0
             ),
             2: ParagraphStyle(
                 'Intro_H2', 
                 parent=base_style, 
-                fontSize=16,  # Тот же размер, что и основной текст
-                leading=24, 
-                spaceBefore=16, 
-                spaceAfter=10,
-                textColor=cosmic_gold,  # Сохраняем цветовое выделение
+                fontSize=24,  # 24pt для подзаголовков
+                leading=30, 
+                spaceBefore=30, 
+                spaceAfter=16,
+                textColor=cosmic_gold,
                 fontName=font_name,
-                alignment=0  # По левому краю
+                alignment=0
             ),
             3: ParagraphStyle(
                 'Intro_H3', 
                 parent=base_style, 
-                fontSize=16,  # Тот же размер, что и основной текст
-                leading=24, 
-                spaceBefore=14, 
-                spaceAfter=8,
-                textColor=cosmic_silver,  # Сохраняем цветовое выделение
+                fontSize=18,  # 18pt для подзаголовков третьего уровня
+                leading=26, 
+                spaceBefore=24, 
+                spaceAfter=14,
+                textColor=cosmic_silver,
                 fontName=font_name,
-                alignment=0  # По левому краю
+                alignment=0
             ),
         }
         
-        # Стиль для заголовка документа (по центру)
+        # Premium стиль для заголовка документа (по центру, 36pt)
         title_style = ParagraphStyle(
             'Title', 
             parent=base_style, 
-            fontSize=28, 
-            leading=34, 
+            fontSize=36,  # 36pt согласно premium дизайну
+            leading=44,  # Межстрочный ~1.22
             alignment=1,  # 1 = TA_CENTER (по центру)
-            spaceAfter=20,
+            spaceAfter=32,  # Отступ перед золотой линией (32-48px)
             textColor=cosmic_gold,
             fontName=font_name
         )
@@ -2341,18 +2438,19 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         story = []
         
         # ===== СТРАНИЦА 1: ТИТУЛЬНЫЙ ЛИСТ =====
-        # Заголовок документа с космическим оформлением
+        # Заголовок документа с premium оформлением
         if title:
             title_text = f"<b>{_clean_inline_markdown(title)}</b>"
             story.append(Paragraph(title_text, title_style))
-            story.append(Spacer(1, 15))
+            # Золотая линия рисуется в функции onPage, поэтому не добавляем Spacer здесь
         
-        # Добавляем место для статичного изображения на первой странице (половина страницы)
+        # Добавляем место для статичного изображения на первой странице
         # Проверяем, существует ли изображение
         if os.path.exists(NATAL_CHART_IMAGE_PATH):
             width, height = A4
-            image_size = min(width, height) / 2  # Половина страницы
-            story.append(Spacer(1, image_size + 20))  # Место для изображения + уменьшенный отступ
+            base_image_size = min(width, height) / 2
+            image_size = base_image_size * 0.825  # Уменьшено на 17.5% (15-20%)
+            story.append(Spacer(1, image_size + 48))  # Место для изображения + отступ 32-48px
         
         # ===== РАЗРЫВ СТРАНИЦЫ =====
         story.append(PageBreak())
