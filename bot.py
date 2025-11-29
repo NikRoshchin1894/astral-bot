@@ -2229,8 +2229,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         # Для колонки 600-650px (213-230 pt) нужны отступы примерно 75-85pt с каждой стороны
         left_margin = 80  # Отступ для колонки ~600px
         right_margin = 80
-        top_margin = 84  # Верхний отступ 84px согласно дизайну
-        bottom_margin = 80  # Увеличен для подписи страницы внизу
+        # Одинаковые отступы сверху и снизу на всех страницах (уменьшенные)
+        top_margin = 60  # Уменьшенный верхний отступ
+        bottom_margin = 60  # Одинаковый нижний отступ для единообразия
         
         doc = BaseDocTemplate(
             temp_path,
@@ -2351,20 +2352,10 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         )
         
         # Стили заголовков для вводного текста
-        # H1 - такого же размера как в основных разделах (36pt)
+        # H1 - используем тот же стиль что и в основных разделах (heading_styles[1])
         # H2, H3 - того же размера что и основной текст (15pt) с цветовым выделением
         intro_heading_styles = {
-            1: ParagraphStyle(
-                'Intro_H1', 
-                parent=intro_base_style, 
-                fontSize=36,  # Такой же размер как в основных разделах
-                leading=44,  # 36pt * 1.22 ≈ 44pt
-                spaceBefore=40, 
-                spaceAfter=18,
-                textColor=cosmic_gold,
-                fontName=font_name,
-                alignment=0
-            ),
+            1: heading_styles[1],  # Используем тот же стиль что и для основных разделов
             2: ParagraphStyle(
                 'Intro_H2', 
                 parent=intro_base_style, 
