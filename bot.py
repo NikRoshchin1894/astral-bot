@@ -2293,7 +2293,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             fontName=font_name,
             fontSize=15,  # 15pt согласно premium дизайну
             leading=24,  # 15pt * 1.6 = 24pt (межстрочный 1.6)
-            spaceAfter=18,  # Уменьшенные отступы между абзацами (18pt вместо 24pt)
+            spaceAfter=14,  # Отступы между абзацами 14pt
             textColor=cosmic_text,
             backColor=None,
             alignment=4  # 4 = TA_JUSTIFY (выравнивание по ширине)
@@ -2344,7 +2344,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 fontName=font_name,
             fontSize=15,
                 leading=24, 
-            spaceAfter=18,  # Одинаковые отступы между абзацами как в основном тексте
+            spaceAfter=14,  # Одинаковые отступы между абзацами как в основном тексте (14pt)
             textColor=cosmic_text,
             backColor=None,
             alignment=4  # Выравнивание по ширине
@@ -2358,7 +2358,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
             fontSize=15,
             leading=24,
             spaceBefore=20,
-            spaceAfter=18,  # Одинаковые отступы между абзацами как в основном тексте
+            spaceAfter=14,  # Одинаковые отступы между абзацами как в основном тексте (14pt)
             textColor=cosmic_gold,  # Золотой цвет как у заголовков
             backColor=None,
             alignment=4  # Выравнивание по ширине
