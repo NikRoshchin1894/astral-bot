@@ -648,7 +648,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     buttons = [
         InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
-        InlineKeyboardButton("🪐 Положение планет", callback_data='planets_info'),
+        InlineKeyboardButton("🪐 Астрологические данные", callback_data='planets_info'),
         InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
         InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support'),
     ]
@@ -676,6 +676,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Просто используйте кнопки меню для навигации!'''
     
     await update.message.reply_text(help_text, parse_mode='Markdown')
+
+
+async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /about - описание бота"""
+    about_text = '''Привет! Я — Айла, создаю персональные астрологические разборы по дате рождения: натальные карты. Точные, глубокие и созданные для тех, кто хочет лучше понять себя.
+
+Поддержка: @Astrology_support'''
+    
+    await update.message.reply_text(about_text, parse_mode=None)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -727,7 +736,7 @@ async def back_to_menu(query):
     """Вернуться в главное меню"""
     buttons = [
         InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
-        InlineKeyboardButton("🪐 Положение планет", callback_data='planets_info'),
+        InlineKeyboardButton("🪐 Астрологические данные", callback_data='planets_info'),
         InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
         InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support'),
     ]
@@ -1320,10 +1329,23 @@ async def handle_natal_chart_request(query, context):
     ])
     
     await query.edit_message_text(
-        "⏳ *Генерация натальной карты...*\n\n"
-        "Пожалуйста, подождите. Обычно это занимает не более 5 минут.",
+        "Создаём вашу натальную карту... Ожидайте ✨✨\n\n"
+        "Как подойти к чтению:\n\n"
+        "Читайте постепенно.\n"
+        "Не обязательно осваивать всё сразу — возвращайтесь к разделам по настроению или по запросу.\n\n"
+        "Замечайте повторяющиеся мотивы.\n"
+        "Они указывают на ваши главные темы и возможные точки трансформации.\n\n"
+        "Сопоставляйте текст со своей реальностью.\n"
+        "Важно не просто прочитать, а увидеть, где это проявляется в вашей жизни.\n\n"
+        "Записывайте инсайты.\n"
+        "Мысли, эмоции, идеи — всё это помогает глубже интегрировать знания о себе.\n\n"
+        "Возвращайтесь к отчёту.\n"
+        "Натальная карта — живой инструмент. Она раскрывается по мере того, как вы открываетесь ей.\n\n"
+        "Это пространство для себя.\n"
+        "Для осознания.\n"
+        "Для роста.",
         reply_markup=keyboard,
-        parse_mode='Markdown'
+        parse_mode=None
     )
     
     # Убеждаемся, что используем имя из заполненного профиля, а не из Telegram
@@ -3663,6 +3685,7 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("about", about_command))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
