@@ -1345,6 +1345,7 @@ async def handle_natal_chart_request(query, context):
                         'stuck_duration_minutes': diff_minutes,
                         'generation_start': start_time_str
                     })
+                    logger.warning(f"⚠️ Генерация для пользователя {user_id} зависла на {diff_minutes:.1f} минут - разрешаем новую попытку")
                 else:
                     # Генерация еще идет, но не прошло 10 минут
                     await query.edit_message_text(
@@ -1530,14 +1531,14 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
             }
             log_event(user_id, 'natal_chart_error', pdf_error_details)
             
-            # Отправляем сообщение об ошибке
+            # Отправляем сообщение об ошибке таймаута
             try:
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=message_id,
-                    text="❌ *Ошибка генерации*\n\n"
-                         "Генерация натальной карты заняла слишком много времени.\n"
-                         "Попробуйте ещё раз.\n\n"
+                    text="⏱️ *Время ожидания истекло*\n\n"
+                         "Генерация натальной карты заняла более 10 минут и была прервана.\n\n"
+                         "Это может произойти из-за высокой нагрузки на сервер. Пожалуйста, попробуйте ещё раз.\n\n"
                          "Если проблема повторяется, обратитесь в поддержку.",
                     parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup([[
@@ -1546,8 +1547,25 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
                     ]])
                 )
-            except:
-                pass
+                logger.info(f"✅ Сообщение о таймауте отправлено пользователю {user_id}")
+            except Exception as e:
+                logger.error(f"❌ Ошибка при отправке сообщения о таймауте пользователю {user_id}: {e}")
+                # Пытаемся отправить обычное сообщение, если редактирование не удалось
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="⏱️ *Время ожидания истекло*\n\n"
+                             "Генерация натальной карты заняла более 10 минут и была прервана.\n\n"
+                             "Пожалуйста, попробуйте ещё раз.",
+                        parse_mode='Markdown',
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart'),
+                            InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                        ]])
+                    )
+                except Exception as e2:
+                    logger.error(f"❌ Критическая ошибка: не удалось отправить сообщение о таймауте пользователю {user_id}: {e2}")
             
             # Удаляем из active_generations и выходим
             if user_id in active_generations:
