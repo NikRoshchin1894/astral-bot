@@ -805,7 +805,7 @@ async def show_planets_info(query, context):
 Чтобы получить интерпретацию этих данных, перейдите в пункт "📜 Хочу натальную карту".'''
     
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 Узнать положение планет", callback_data='get_planets_data')],
+        [InlineKeyboardButton("📊 Получить астрологические данные", callback_data='get_planets_data')],
         [InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart')],
         [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
     ])
