@@ -1026,22 +1026,13 @@ async def handle_planets_request(query, context):
         await query.answer("❌ Произошла ошибка при расчете данных. Попробуйте позже.", show_alert=True)
 
 
-async def my_profile(query, context):
-    """Данные о рождении"""
-    user_id = query.from_user.id
-    
-    # Логируем просмотр профиля
-    log_event(user_id, 'profile_viewed', {})
-    user_data = context.user_data
-    
+def get_profile_message_and_buttons(user_id, user_data):
+    """Формирует текст и кнопки для сообщения профиля"""
     db_data = load_user_profile(user_id)
     if db_data:
-        user_data.update(db_data)
+        user_data = {**user_data, **db_data}  # Объединяем данные
     
     has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
-    paid_status = user_data.get('has_paid') or user_has_paid(user_id)
-    if paid_status:
-        user_data['has_paid'] = True
     
     if has_profile:
         profile_text = f'''📋 *Данные о рождении*
@@ -1072,7 +1063,30 @@ async def my_profile(query, context):
         ]
     
     keyboard = InlineKeyboardMarkup([[button] for button in buttons])
+    return profile_text, keyboard
+
+
+async def my_profile(query, context):
+    """Данные о рождении"""
+    user_id = query.from_user.id
+    
+    # Логируем просмотр профиля
+    log_event(user_id, 'profile_viewed', {})
+    user_data = context.user_data
+    
+    profile_text, keyboard = get_profile_message_and_buttons(user_id, user_data)
     await query.edit_message_text(
+        profile_text,
+        reply_markup=keyboard,
+        parse_mode='Markdown'
+    )
+
+
+async def show_profile_message(update, user_data):
+    """Показывает сообщение с профилем через обычное сообщение (не через query)"""
+    user_id = update.message.from_user.id
+    profile_text, keyboard = get_profile_message_and_buttons(user_id, user_data)
+    await update.message.reply_text(
         profile_text,
         reply_markup=keyboard,
         parse_mode='Markdown'
@@ -1329,24 +1343,24 @@ async def handle_natal_chart_request(query, context):
     ])
     
     await query.edit_message_text(
-        "*Создаём вашу натальную карту... Ожидайте ✨✨*\n\n"
+        "Создаём вашу натальную карту... Ожидайте ✨✨\n\n"
         "Обычно это занимает не более 5 минут.\n\n"
-        "*Как подойти к чтению:*\n\n"
-        "*Читайте постепенно.*\n"
+        "Как подойти к чтению:\n\n"
+        "Читайте постепенно.\n"
         "Не обязательно осваивать всё сразу — возвращайтесь к разделам по настроению или по запросу.\n\n"
-        "*Замечайте повторяющиеся мотивы.*\n"
+        "Замечайте повторяющиеся мотивы.\n"
         "Они указывают на ваши главные темы и возможные точки трансформации.\n\n"
-        "*Сопоставляйте текст со своей реальностью.*\n"
+        "Сопоставляйте текст со своей реальностью.\n"
         "Важно не просто прочитать, а увидеть, где это проявляется в вашей жизни.\n\n"
-        "*Записывайте инсайты.*\n"
+        "Записывайте инсайты.\n"
         "Мысли, эмоции, идеи — всё это помогает глубже интегрировать знания о себе.\n\n"
-        "*Возвращайтесь к отчёту.*\n"
+        "Возвращайтесь к отчёту.\n"
         "Натальная карта — живой инструмент. Она раскрывается по мере того, как вы открываетесь ей.\n\n"
-        "*Это пространство для себя.*\n"
-        "*Для осознания.*\n"
-        "*Для роста.*",
+        "Это пространство для себя.\n"
+        "Для осознания.\n"
+        "Для роста.",
         reply_markup=keyboard,
-        parse_mode='Markdown'
+        parse_mode=None
     )
     
     # Убеждаемся, что используем имя из заполненного профиля, а не из Telegram
@@ -2766,13 +2780,8 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
-        await update.message.reply_text(
-            "✅ Имя успешно изменено!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]])
-        )
+        # Сразу показываем профиль вместо сообщения об успехе
+        await show_profile_message(update, user_data)
     
     elif state == 'edit_date':
         is_valid, error_msg = validate_date(text)
@@ -2787,13 +2796,8 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
-        await update.message.reply_text(
-            "✅ Дата рождения успешно изменена!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]])
-        )
+        # Сразу показываем профиль вместо сообщения об успехе
+        await show_profile_message(update, user_data)
     
     elif state == 'edit_time':
         is_valid, error_msg = validate_time(text)
@@ -2808,13 +2812,8 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
-        await update.message.reply_text(
-            "✅ Время рождения успешно изменено!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]])
-        )
+        # Сразу показываем профиль вместо сообщения об успехе
+        await show_profile_message(update, user_data)
     
     elif state == 'edit_place':
         is_valid, error_msg = validate_place(text)
@@ -2829,13 +2828,8 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
-        await update.message.reply_text(
-            "✅ Место рождения успешно изменено!",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📋 Данные", callback_data='my_profile'),
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]])
-        )
+        # Сразу показываем профиль вместо сообщения об успехе
+        await show_profile_message(update, user_data)
 
 
 def get_coordinates_from_place(place_str: str) -> Tuple[Optional[float], Optional[float]]:
