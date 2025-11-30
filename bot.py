@@ -1150,6 +1150,9 @@ async def show_profile_message(update, user_data):
 
 async def select_edit_field(query, context):
     """Выбор поля для редактирования"""
+    user_id = query.from_user.id
+    log_event(user_id, 'profile_edit_select', {})
+    
     await query.edit_message_text(
         "✏️ *Редактирование данных о рождении*\n\n"
         "Выберите, что вы хотите изменить:",
@@ -1234,6 +1237,9 @@ async def start_payment_process(query, context):
 
 async def start_edit_field(query, context, field_type):
     """Начало редактирования конкретного поля"""
+    user_id = query.from_user.id
+    log_event(user_id, 'profile_edit_start', {'field': field_type})
+    
     user_data = context.user_data
     
     field_info = {
@@ -2710,6 +2716,9 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
 
 async def natal_chart_start(query, context):
     """Начало создания натальной карты"""
+    user_id = query.from_user.id
+    log_event(user_id, 'profile_filling_start', {})
+    
     buttons = InlineKeyboardMarkup([[
         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
     ]])
@@ -2739,8 +2748,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
     ]])
     
     if state == 'name':
+        user_id = update.message.from_user.id
         user_data['birth_name'] = text
         user_data['natal_chart_state'] = 'date'
+        log_event(user_id, 'profile_field_entered', {'field': 'name', 'step': 1, 'total_steps': 4})
         await update.message.reply_text(
             "✅ Имя сохранено!\n\n"
             "📅 Теперь введите дату рождения в формате: ДД.ММ.ГГГГ\n"
@@ -2748,8 +2759,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             reply_markup=back_button
         )
     elif state == 'date':
+        user_id = update.message.from_user.id
         is_valid, error_msg = validate_date(text)
         if not is_valid:
+            log_event(user_id, 'profile_field_validation_error', {'field': 'date', 'error': error_msg})
             await update.message.reply_text(
                 f"❌ {error_msg}\n\n"
                 "Пожалуйста, введите дату в правильном формате: ДД.ММ.ГГГГ\n"
@@ -2758,8 +2771,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             )
             return
         
+        user_id = update.message.from_user.id
         user_data['birth_date'] = text
         user_data['natal_chart_state'] = 'time'
+        log_event(user_id, 'profile_field_entered', {'field': 'date', 'step': 2, 'total_steps': 4})
         await update.message.reply_text(
             "✅ Дата рождения сохранена!\n\n"
             "🕐 Теперь введите время рождения в формате: ЧЧ:ММ\n"
@@ -2767,8 +2782,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             reply_markup=back_button
         )
     elif state == 'time':
+        user_id = update.message.from_user.id
         is_valid, error_msg = validate_time(text)
         if not is_valid:
+            log_event(user_id, 'profile_field_validation_error', {'field': 'time', 'error': error_msg})
             await update.message.reply_text(
                 f"❌ {error_msg}\n\n"
                 "Пожалуйста, введите время в правильном формате: ЧЧ:ММ\n"
@@ -2777,8 +2794,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             )
             return
         
+        user_id = update.message.from_user.id
         user_data['birth_time'] = text
         user_data['natal_chart_state'] = 'place'
+        log_event(user_id, 'profile_field_entered', {'field': 'time', 'step': 3, 'total_steps': 4})
         await update.message.reply_text(
             "✅ Время рождения сохранено!\n\n"
             "🌍 Теперь введите место рождения (город, страна)\n"
@@ -2786,8 +2805,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             reply_markup=back_button
         )
     elif state == 'place':
+        user_id = update.message.from_user.id
         is_valid, error_msg = validate_place(text)
         if not is_valid:
+            log_event(user_id, 'profile_field_validation_error', {'field': 'place', 'error': error_msg})
             await update.message.reply_text(
                 f"❌ {error_msg}\n\n"
                 "Пожалуйста, введите место рождения (город, страна)\n"
@@ -2799,7 +2820,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data['birth_place'] = text
         user_data['natal_chart_state'] = 'complete'
         
-        user_id = update.message.from_user.id
+        log_event(user_id, 'profile_field_entered', {'field': 'place', 'step': 4, 'total_steps': 4})
         save_user_profile(user_id, user_data)
         
         # Логируем полное заполнение профиля
@@ -2828,12 +2849,15 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
+        log_event(user_id, 'profile_field_edited', {'field': 'name'})
         # Сразу показываем профиль вместо сообщения об успехе
         await show_profile_message(update, user_data)
     
     elif state == 'edit_date':
+        user_id = update.message.from_user.id
         is_valid, error_msg = validate_date(text)
         if not is_valid:
+            log_event(user_id, 'profile_field_validation_error', {'field': 'date', 'error': error_msg, 'context': 'edit'})
             await update.message.reply_text(
                 f"❌ {error_msg}\n\n"
                 "Пожалуйста, введите дату в правильном формате: ДД.ММ.ГГГГ",
@@ -2844,12 +2868,15 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
+        log_event(user_id, 'profile_field_edited', {'field': 'date'})
         # Сразу показываем профиль вместо сообщения об успехе
         await show_profile_message(update, user_data)
     
     elif state == 'edit_time':
+        user_id = update.message.from_user.id
         is_valid, error_msg = validate_time(text)
         if not is_valid:
+            log_event(user_id, 'profile_field_validation_error', {'field': 'time', 'error': error_msg, 'context': 'edit'})
             await update.message.reply_text(
                 f"❌ {error_msg}\n\n"
                 "Пожалуйста, введите время в правильном формате: ЧЧ:ММ",
@@ -2860,12 +2887,15 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
+        log_event(user_id, 'profile_field_edited', {'field': 'time'})
         # Сразу показываем профиль вместо сообщения об успехе
         await show_profile_message(update, user_data)
     
     elif state == 'edit_place':
+        user_id = update.message.from_user.id
         is_valid, error_msg = validate_place(text)
         if not is_valid:
+            log_event(user_id, 'profile_field_validation_error', {'field': 'place', 'error': error_msg, 'context': 'edit'})
             await update.message.reply_text(
                 f"❌ {error_msg}\n\n"
                 "Пожалуйста, введите место рождения",
@@ -2876,6 +2906,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_data.pop('natal_chart_state', None)
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
+        log_event(user_id, 'profile_field_edited', {'field': 'place'})
         # Сразу показываем профиль вместо сообщения об успехе
         await show_profile_message(update, user_data)
 
