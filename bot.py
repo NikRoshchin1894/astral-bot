@@ -320,7 +320,47 @@ def save_user_profile(user_id, user_data):
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
 
-    birth_place = user_data.get('birth_place', '')
+    # Сначала загружаем текущие данные пользователя, чтобы не потерять существующие поля
+    if db_type == 'postgresql':
+        cursor.execute('SELECT first_name, birth_date, birth_time, birth_place, has_paid FROM users WHERE user_id = %s', (user_id,))
+        row = cursor.fetchone()
+        if row:
+            current_data = {
+                'first_name': row[0] or '',
+                'birth_date': row[1] or '',
+                'birth_time': row[2] or '',
+                'birth_place': row[3] or '',
+                'has_paid': row[4] or 0
+            }
+        else:
+            current_data = {}
+    else:
+        # Для SQLite используем явный список колонок
+        cursor.execute('SELECT first_name, birth_date, birth_time, birth_place, has_paid FROM users WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
+        if row:
+            current_data = {
+                'first_name': row[0] or '',
+                'birth_date': row[1] or '',
+                'birth_time': row[2] or '',
+                'birth_place': row[3] or '',
+                'has_paid': row[4] or 0
+            }
+        else:
+            current_data = {}
+
+    # Объединяем текущие данные с новыми (новые данные имеют приоритет)
+    # Обновляем только те поля, которые переданы в user_data
+    merged_data = {
+        'first_name': user_data.get('birth_name') if 'birth_name' in user_data else current_data.get('first_name', ''),
+        'birth_date': user_data.get('birth_date') if 'birth_date' in user_data else current_data.get('birth_date', ''),
+        'birth_time': user_data.get('birth_time') if 'birth_time' in user_data else current_data.get('birth_time', ''),
+        'birth_place': user_data.get('birth_place') if 'birth_place' in user_data else current_data.get('birth_place', ''),
+        'has_paid': current_data.get('has_paid', 0)
+    }
+
+    # Обрабатываем место рождения (разделяем на city и country)
+    birth_place = merged_data.get('birth_place', '')
     if ',' in birth_place:
         parts = birth_place.split(',')
         city = parts[0].strip()
@@ -329,15 +369,7 @@ def save_user_profile(user_id, user_data):
         city = birth_place
         country = ''
 
-    # Получаем текущий статус оплаты
-    if db_type == 'postgresql':
-        cursor.execute('SELECT has_paid FROM users WHERE user_id = %s', (user_id,))
-    else:
-        cursor.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
-    row = cursor.fetchone()
-    has_paid = row[0] if row else 0
-
-    # Сохраняем профиль
+    # Сохраняем профиль (не трогаем username, он обновляется отдельно через save_user_username)
     if db_type == 'postgresql':
         cursor.execute('''
             INSERT INTO users 
@@ -353,13 +385,13 @@ def save_user_profile(user_id, user_data):
                 updated_at = EXCLUDED.updated_at
         ''', (
             user_id,
-            user_data.get('birth_name', ''),
+            merged_data['first_name'],
             country,
             city,
-            user_data.get('birth_date', ''),
-            user_data.get('birth_time', ''),
+            merged_data['birth_date'],
+            merged_data['birth_time'],
             birth_place,
-            has_paid,
+            merged_data['has_paid'],
             datetime.now().isoformat()
         ))
     else:
@@ -377,13 +409,13 @@ def save_user_profile(user_id, user_data):
                 updated_at = excluded.updated_at
         ''', (
             user_id,
-            user_data.get('birth_name', ''),
+            merged_data['first_name'],
             country,
             city,
-            user_data.get('birth_date', ''),
-            user_data.get('birth_time', ''),
+            merged_data['birth_date'],
+            merged_data['birth_time'],
             birth_place,
-            has_paid,
+            merged_data['has_paid'],
             datetime.now().isoformat()
         ))
     conn.commit()
