@@ -46,7 +46,7 @@ from psycopg2.extras import RealDictCursor
 from urllib.parse import urlparse
 from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import pytz
 from timezonefinder import TimezoneFinder
 
@@ -1840,8 +1840,10 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                 parse_mode='Markdown'
             )
     finally:
-        # Сначала удаляем информацию о генерации, чтобы предотвратить дублирующие запросы
+        # Всегда очищаем active_generations, даже при ошибках или перезапуске
+        # Это предотвращает зависание генераций при перезапуске контейнера
         if user_id in active_generations:
+            logger.info(f"🧹 Очистка active_generations для пользователя {user_id}")
             del active_generations[user_id]
         
         # ВРЕМЕННО: Оплата отключена, не сбрасываем статус оплаты
@@ -3827,14 +3829,96 @@ def main():
             raise
 
 
+async def cleanup_stuck_generations_on_startup():
+    """Очистка зависших генераций при запуске бота"""
+    logger.info("🔍 Проверка зависших генераций при запуске...")
+    try:
+        conn, db_type = get_db_connection()
+        cursor = conn.cursor()
+        now = datetime.now(timezone.utc)
+        ten_minutes_ago = (now - timedelta(minutes=10)).isoformat()
+        
+        if db_type == 'postgresql':
+            cursor.execute("""
+                SELECT e1.user_id, e1.timestamp
+                FROM events e1
+                WHERE e1.event_type = 'natal_chart_generation_start'
+                AND e1.timestamp < %s
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM events e2 
+                    WHERE e2.user_id = e1.user_id 
+                    AND e2.event_type IN ('natal_chart_success', 'natal_chart_error')
+                    AND e2.timestamp > e1.timestamp
+                )
+            """, (ten_minutes_ago,))
+        else:
+            cursor.execute("""
+                SELECT e1.user_id, e1.timestamp
+                FROM events e1
+                WHERE e1.event_type = 'natal_chart_generation_start'
+                AND e1.timestamp < ?
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM events e2 
+                    WHERE e2.user_id = e1.user_id 
+                    AND e2.event_type IN ('natal_chart_success', 'natal_chart_error')
+                    AND e2.timestamp > e1.timestamp
+                )
+            """, (ten_minutes_ago,))
+        
+        stuck_generations = cursor.fetchall()
+        
+        if stuck_generations:
+            logger.warning(f"⚠️ Найдено {len(stuck_generations)} незавершенных генераций при запуске (вероятно из-за перезапуска контейнера)")
+            for row in stuck_generations:
+                user_id = row[0]
+                start_time_str = str(row[1])
+                try:
+                    start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+                    if start_time.tzinfo is None:
+                        start_time = start_time.replace(tzinfo=timezone.utc)
+                    duration_minutes = (now - start_time).total_seconds() / 60
+                    
+                    # Логируем как ошибку перезапуска
+                    error_data = {
+                        'error_type': 'ContainerRestart',
+                        'error_message': f'Генерация была прервана из-за перезапуска контейнера. Длительность до перезапуска: {duration_minutes:.1f} минут',
+                        'stage': 'generation',
+                        'stuck_duration_minutes': duration_minutes,
+                        'generation_start': start_time_str,
+                        'detected_at_startup': True
+                    }
+                    log_event(user_id, 'natal_chart_error', error_data)
+                    logger.info(f"   ✅ Зависшая генерация для user_id {user_id} залогирована как ContainerRestart")
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Ошибка при обработке зависшей генерации для user_id {user_id}: {e}")
+        else:
+            logger.info("✅ Незавершенных генераций не найдено")
+        
+        conn.close()
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке зависших генераций при запуске: {e}", exc_info=True)
+
+
 if __name__ == '__main__':
     # Инициализация базы данных при запуске
     logger.info("Запуск инициализации базы данных...")
     try:
         init_db()
-        logger.info("Инициализация БД завершена успешно, запуск бота...")
+        logger.info("Инициализация БД завершена успешно")
     except Exception as e:
         logger.error(f"❌ Критическая ошибка при инициализации БД: {e}", exc_info=True)
         logger.error("Бот не может быть запущен без инициализированной БД!")
         sys.exit(1)
+    
+    # Очистка зависших генераций при запуске (синхронно, так как мы еще не в async контексте)
+    try:
+        import asyncio
+        asyncio.run(cleanup_stuck_generations_on_startup())
+    except Exception as e:
+        logger.error(f"❌ Ошибка при очистке зависших генераций: {e}", exc_info=True)
+        # Не останавливаем бота из-за этого
+    
+    logger.info("Запуск бота...")
     main()
