@@ -1228,8 +1228,9 @@ async def start_payment_process(query, context):
         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
     ]])
     await query.message.reply_text(
-        "Если хотите вернуться, нажмите «Главное меню».",
-        reply_markup=menu_keyboard
+        "*После оплаты сразу приступлю к подготовке отчета!*✨",
+        reply_markup=menu_keyboard,
+        parse_mode='Markdown'
     )
 
 
