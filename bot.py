@@ -2537,7 +2537,8 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         for raw_line in intro_lines:
             line = raw_line.rstrip('\r')
             if not line.strip():
-                intro_content.append(Spacer(1, 10))
+                # Не добавляем Spacer для пустых строк, чтобы отступы были одинаковые как в основном тексте
+                # spaceAfter=14 из стиля сам добавит отступы между абзацами
                 continue
             
             stripped = line.lstrip()
