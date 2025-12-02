@@ -2182,7 +2182,22 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
         "Idempotence-Key": payment_id
     }
     
-    logger.info(f"🔑 Создание платежа в ЮKassa: user_id={user_id}, amount={amount_rub}, shop_id={shop_id[:10]}...")
+    # Проверяем, что shop_id и secret_key не пустые и имеют корректный формат
+    if not shop_id or shop_id.strip() == '':
+        logger.error("❌ YOOKASSA_SHOP_ID пустой или не установлен")
+        return None
+    if not secret_key or secret_key.strip() == '':
+        logger.error("❌ YOOKASSA_SECRET_KEY пустой или не установлен")
+        return None
+    
+    # Проверяем базовый формат shop_id (должен быть числом)
+    try:
+        int(shop_id)
+    except ValueError:
+        logger.error(f"❌ YOOKASSA_SHOP_ID имеет неверный формат (ожидается число): {shop_id[:10]}...")
+        return None
+    
+    logger.info(f"🔑 Создание платежа в ЮKassa: user_id={user_id}, amount={amount_rub}, shop_id={shop_id}")
     logger.debug(f"📦 Payment data: {json.dumps(payment_data, ensure_ascii=False, indent=2)}")
     
     try:
@@ -2219,6 +2234,21 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
             try:
                 error_details = response.json()
                 logger.error(f"📋 Детали ошибки: {json.dumps(error_details, ensure_ascii=False, indent=2)}")
+                
+                # Специальная обработка ошибки 401 (неверные credentials)
+                if response.status_code == 401:
+                    error_code = error_details.get('code', '')
+                    if error_code == 'invalid_credentials':
+                        logger.error("=" * 60)
+                        logger.error("🚨 КРИТИЧЕСКАЯ ОШИБКА АУТЕНТИФИКАЦИИ ЮKASSA!")
+                        logger.error("=" * 60)
+                        logger.error("❌ YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY неверны или истек срок действия")
+                        logger.error("💡 Решение:")
+                        logger.error("   1. Проверьте значения YOOKASSA_SHOP_ID и YOOKASSA_SECRET_KEY в переменных окружения")
+                        logger.error("   2. Убедитесь, что используете ключи из правильного окружения (тестовое/продакшн)")
+                        logger.error("   3. Перевыпустите секретный ключ в личном кабинете ЮKassa (Merchant Profile)")
+                        logger.error("   4. Проверьте, что shop_id и secret_key соответствуют друг другу")
+                        logger.error("=" * 60)
             except:
                 pass
             return None
