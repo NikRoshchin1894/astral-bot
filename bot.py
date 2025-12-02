@@ -2698,7 +2698,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
         # Добавляем заголовок "Вводное слово"
         intro_title_cleaned = _clean_inline_markdown("Вводное слово")
         story.append(Paragraph(intro_title_cleaned, heading_styles[2]))  # Используем H2 стиль (24pt)
-        story.append(Spacer(1, 20))
+        # Убран Spacer - отступ формируется через spaceAfter=18 в стиле заголовка для единообразия
         
         # Добавляем вводный текст
         story.extend(intro_content)
