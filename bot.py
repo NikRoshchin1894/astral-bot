@@ -13,6 +13,7 @@ import re
 import tempfile
 import time
 import uuid
+import threading
 from datetime import datetime
 from typing import Optional, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
@@ -28,6 +29,9 @@ from telegram.ext import (
     TypeHandler
 )
 from dotenv import load_dotenv
+from flask import Flask, request, jsonify
+import hmac
+import hashlib
 from openai import OpenAI
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
@@ -661,11 +665,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Сохраняем username в базу данных
     save_user_username(user_id, user.username, user.first_name)
     
+    # Проверяем параметры команды /start (например, /start payment_success)
+    start_param = None
+    if context.args and len(context.args) > 0:
+        start_param = context.args[0]
+    
+    # Обработка возврата после оплаты
+    if start_param == 'payment_success':
+        # Проверяем, есть ли неоплаченные платежи для этого пользователя
+        payment_processed = await check_and_process_pending_payment(user_id, context)
+        if payment_processed:
+            # Если платеж был обработан, показываем главное меню
+            return
+        else:
+            # Если платеж еще не найден, отправляем сообщение
+            await update.message.reply_text(
+                "✅ *Оплата получена!*\n\n"
+                "Обрабатываю платеж... Пожалуйста, подождите немного. "
+                "Если натальная карта не начнет генерироваться автоматически, нажмите кнопку ниже.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]]),
+                parse_mode='Markdown'
+            )
+            return
+    
+    elif start_param == 'payment_cancel':
+        await update.message.reply_text(
+            "❌ *Оплата отменена*\n\n"
+            "Вы можете попробовать оплатить позже.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("💳 Попробовать оплатить снова", callback_data='buy_natal_chart'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            ]]),
+            parse_mode='Markdown'
+        )
+        return
+    
     # Логируем событие старта
     log_event(user_id, 'start', {
         'username': user.username,
         'first_name': user.first_name,
-        'language_code': user.language_code
+        'language_code': user.language_code,
+        'start_param': start_param
     })
     
     # Приветственное сообщение для главного меню (после /start)
@@ -1166,71 +1209,73 @@ async def select_edit_field(query, context):
 
 
 async def start_payment_process(query, context):
-    """Начало процесса оплаты через Telegram Payments"""
+    """Начало процесса оплаты через ЮKassa (внешняя ссылка)"""
     user_id = query.from_user.id
     
     # Логируем начало процесса оплаты
     log_event(user_id, 'payment_start', {
         'amount_rub': NATAL_CHART_PRICE_RUB,
-        'amount_minor': NATAL_CHART_PRICE_MINOR
+        'payment_provider': 'yookassa'
     })
     
-    provider_token = os.getenv('TELEGRAM_PROVIDER_TOKEN')
-    if not provider_token:
-        logger.error(f"TELEGRAM_PROVIDER_TOKEN не установлен для пользователя {user_id}")
+    # Проверяем наличие необходимых ключей ЮKassa
+    shop_id = os.getenv('YOOKASSA_SHOP_ID')
+    secret_key = os.getenv('YOOKASSA_SECRET_KEY')
+    
+    if not shop_id or not secret_key:
+        logger.error(f"YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY не установлены для пользователя {user_id}")
         await query.answer(
             "❌ Настройка оплаты не завершена.\n\n"
-            "Для получения тестового токена провайдера:\n"
-            "1. Откройте @BotFather в Telegram\n"
-            "2. Отправьте /mybots\n"
-            "3. Выберите вашего бота\n"
-            "4. Выберите 'Payments'\n"
-            "5. Выберите 'Test' для тестового токена\n"
-            "6. Скопируйте токен и добавьте в переменную окружения TELEGRAM_PROVIDER_TOKEN",
+            "Необходимо настроить:\n"
+            "1. Зарегистрируйтесь в ЮKassa\n"
+            "2. Получите Shop ID и Secret Key\n"
+            "3. Добавьте в переменные окружения:\n"
+            "   - YOOKASSA_SHOP_ID\n"
+            "   - YOOKASSA_SECRET_KEY",
             show_alert=True
         )
-        log_event(user_id, 'payment_error', {'error': 'provider_token_not_set'})
+        log_event(user_id, 'payment_error', {'error': 'yookassa_credentials_not_set'})
         return
     
-    logger.info(f"Используется provider_token для создания invoice (первые 10 символов: {provider_token[:10]}...)")
-    logger.info(f"💰 Создание invoice: цена = {NATAL_CHART_PRICE_RUB} ₽ ({NATAL_CHART_PRICE_MINOR} копеек)")
+    logger.info(f"💰 Создание ссылки на оплату через ЮKassa: цена = {NATAL_CHART_PRICE_RUB} ₽")
     
-    # Валидация: проверяем, что цена в допустимых пределах для Telegram Payments
-    if NATAL_CHART_PRICE_MINOR < 1 or NATAL_CHART_PRICE_MINOR > 999999999:
-        logger.error(f"❌ Некорректная цена для платежа: {NATAL_CHART_PRICE_MINOR} копеек")
-        await query.answer("Ошибка: некорректная цена. Свяжитесь с администратором.", show_alert=True)
-        log_event(user_id, 'payment_error', {'error': 'invalid_price', 'amount_minor': NATAL_CHART_PRICE_MINOR})
-        return
-
-    prices = [LabeledPrice(label='Натальная карта', amount=NATAL_CHART_PRICE_MINOR)]
-    payload = f"natal_chart:{query.from_user.id}:{uuid.uuid4()}"
-
     await query.answer()
     
     try:
-        await query.message.reply_invoice(
-            title='Натальная карта',
-            description='После оплаты сразу приступлю к подготовке отчета!✨',
-            payload=payload,
-            provider_token=provider_token,
-            currency='RUB',
-            prices=prices,
-            need_name=True
+        # Создаем ссылку на оплату
+        payment_url = create_yookassa_payment_link(
+            user_id=user_id,
+            amount_rub=NATAL_CHART_PRICE_RUB,
+            description="Натальная карта - детальный астрологический разбор"
         )
-        logger.info(f"✅ Invoice успешно отправлен пользователю {user_id}")
-    except Exception as invoice_error:
-        logger.error(f"❌ Ошибка при отправке invoice: {invoice_error}", exc_info=True)
-        log_event(user_id, 'payment_error', {'error': str(invoice_error), 'stage': 'invoice_creation'})
-        await query.answer("Ошибка при создании платежа. Попробуйте позже.", show_alert=True)
-        return
-
-    menu_keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
-    ]])
-    await query.message.reply_text(
-        "Если хотите вернуться, нажмите «Главное меню».",
-        reply_markup=menu_keyboard
-    )
+        
+        if not payment_url:
+            logger.error(f"❌ Не удалось создать ссылку на оплату для пользователя {user_id}")
+            await query.answer("Ошибка при создании ссылки на оплату. Попробуйте позже.", show_alert=True)
+            log_event(user_id, 'payment_error', {'error': 'payment_link_creation_failed'})
+            return
+        
+        logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}")
+        
+        # Отправляем сообщение с кнопкой для перехода на оплату
+        payment_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
+        ])
+        
+        await query.message.reply_text(
+            f"*Оплата натальной карты*\n\n"
+            f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
+            f"Нажмите кнопку ниже, чтобы перейти на страницу оплаты.\n\n"
+            f"*После оплаты сразу приступлю к подготовке отчета!*✨",
+            reply_markup=payment_keyboard,
+            parse_mode='Markdown'
+        )
+        
+    except Exception as payment_error:
+        logger.error(f"❌ Ошибка при создании ссылки на оплату: {payment_error}", exc_info=True)
+        log_event(user_id, 'payment_error', {'error': str(payment_error), 'stage': 'payment_link_creation'})
+        await query.answer("Ошибка при создании ссылки на оплату. Попробуйте позже.", show_alert=True)
 
 
 async def start_edit_field(query, context, field_type):
@@ -2012,6 +2057,408 @@ REPORTLAB_FONT_CANDIDATES = [
 
 NATAL_CHART_PRICE_RUB = 499
 NATAL_CHART_PRICE_MINOR = NATAL_CHART_PRICE_RUB * 100  # копейки для Telegram
+
+
+def create_yookassa_payment_link(user_id: int, amount_rub: float, description: str = "Натальная карта") -> Optional[str]:
+    """
+    Создает ссылку на оплату через ЮKassa
+    
+    Требуемые переменные окружения:
+    - YOOKASSA_SHOP_ID: ID магазина в ЮKassa
+    - YOOKASSA_SECRET_KEY: Секретный ключ ЮKassa
+    - PAYMENT_SUCCESS_URL: URL для редиректа после успешной оплаты (опционально)
+    - PAYMENT_RETURN_URL: URL для возврата при отмене (опционально)
+    
+    Returns:
+        str: URL для оплаты или None в случае ошибки
+    """
+    import requests
+    import base64
+    
+    shop_id = os.getenv('YOOKASSA_SHOP_ID')
+    secret_key = os.getenv('YOOKASSA_SECRET_KEY')
+    
+    if not shop_id or not secret_key:
+        logger.error(f"YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY не установлены")
+        return None
+    
+    # Формируем ID платежа
+    payment_id = f"natal_chart_{user_id}_{uuid.uuid4().hex[:8]}"
+    
+    # URL для уведомлений (webhook)
+    webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')  # Нужно будет настроить webhook endpoint
+    success_url = os.getenv('PAYMENT_SUCCESS_URL', f'https://t.me/{(os.getenv("TELEGRAM_BOT_TOKEN", "") or "bot").split(":")[0]}?start=payment_success')
+    return_url = os.getenv('PAYMENT_RETURN_URL', f'https://t.me/{(os.getenv("TELEGRAM_BOT_TOKEN", "") or "bot").split(":")[0]}?start=payment_cancel')
+    
+    # Подготовка данных для создания платежа
+    payment_data = {
+        "amount": {
+            "value": f"{amount_rub:.2f}",
+            "currency": "RUB"
+        },
+        "confirmation": {
+            "type": "redirect",
+            "return_url": return_url
+        },
+        "capture": True,
+        "description": description,
+        "metadata": {
+            "user_id": str(user_id),
+            "payment_type": "natal_chart"
+        }
+    }
+    
+    # Добавляем webhook URL если указан
+    if webhook_url:
+        payment_data["receipt"] = {
+            "customer": {
+                "full_name": f"User_{user_id}"
+            },
+            "items": [
+                {
+                    "description": description,
+                    "quantity": "1",
+                    "amount": {
+                        "value": f"{amount_rub:.2f}",
+                        "currency": "RUB"
+                    },
+                    "vat_code": 1
+                }
+            ]
+        }
+    
+    # Авторизация через Basic Auth
+    auth_string = f"{shop_id}:{secret_key}"
+    auth_bytes = auth_string.encode('ascii')
+    auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+    headers = {
+        "Authorization": f"Basic {auth_b64}",
+        "Content-Type": "application/json",
+        "Idempotence-Key": payment_id
+    }
+    
+    try:
+        # Создаем платеж через API ЮKassa
+        response = requests.post(
+            "https://api.yookassa.ru/v3/payments",
+            json=payment_data,
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            payment_info = response.json()
+            payment_url = payment_info.get("confirmation", {}).get("confirmation_url")
+            
+            if payment_url:
+                logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}: {payment_info.get('id')}")
+                
+                # Сохраняем информацию о платеже в базу для отслеживания
+                save_payment_info(user_id, payment_info.get('id'), payment_id, amount_rub)
+                
+                return payment_url
+            else:
+                logger.error(f"❌ ЮKassa вернула платеж без URL подтверждения: {payment_info}")
+                return None
+        else:
+            logger.error(f"❌ Ошибка при создании платежа в ЮKassa: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Исключение при создании платежа в ЮKassa: {e}", exc_info=True)
+        return None
+
+
+async def check_yookassa_payment_status(yookassa_payment_id: str) -> Optional[dict]:
+    """
+    Проверяет статус платежа через API ЮKassa
+    
+    Returns:
+        dict: Информация о платеже или None в случае ошибки
+    """
+    import requests
+    import base64
+    
+    shop_id = os.getenv('YOOKASSA_SHOP_ID')
+    secret_key = os.getenv('YOOKASSA_SECRET_KEY')
+    
+    if not shop_id or not secret_key:
+        logger.error("YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY не установлены")
+        return None
+    
+    # Авторизация через Basic Auth
+    auth_string = f"{shop_id}:{secret_key}"
+    auth_bytes = auth_string.encode('ascii')
+    auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
+    headers = {
+        "Authorization": f"Basic {auth_b64}",
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.get(
+            f"https://api.yookassa.ru/v3/payments/{yookassa_payment_id}",
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            payment_info = response.json()
+            logger.info(f"✅ Статус платежа {yookassa_payment_id}: {payment_info.get('status')}")
+            return payment_info
+        else:
+            logger.error(f"❌ Ошибка при проверке статуса платежа: {response.status_code} - {response.text}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"❌ Исключение при проверке статуса платежа: {e}", exc_info=True)
+        return None
+
+
+def update_payment_status(yookassa_payment_id: str, status: str, payment_data: dict = None):
+    """Обновляет статус платежа в базе данных"""
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == 'postgresql':
+            cursor.execute('''
+                UPDATE payments
+                SET status = %s, updated_at = %s
+                WHERE yookassa_payment_id = %s
+                RETURNING user_id, amount
+            ''', (status, datetime.now(), yookassa_payment_id))
+        else:
+            cursor.execute('''
+                UPDATE payments
+                SET status = ?, updated_at = ?
+                WHERE yookassa_payment_id = ?
+            ''', (status, datetime.now().isoformat(), yookassa_payment_id))
+            # Для SQLite нужно отдельно получить user_id
+            cursor.execute('''
+                SELECT user_id, amount FROM payments
+                WHERE yookassa_payment_id = ?
+            ''', (yookassa_payment_id,))
+        
+        result = cursor.fetchone()
+        conn.commit()
+        
+        if result:
+            user_id = result[0]
+            amount = result[1]
+            logger.info(f"💾 Статус платежа обновлен: payment_id={yookassa_payment_id}, status={status}, user_id={user_id}")
+            return user_id, amount
+        return None, None
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при обновлении статуса платежа: {e}", exc_info=True)
+        conn.rollback()
+        return None, None
+    finally:
+        conn.close()
+
+
+async def check_and_process_pending_payment(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Проверяет и обрабатывает ожидающие платежи для пользователя
+    
+    Returns:
+        bool: True если платеж был найден и обработан, False иначе
+    """
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Ищем последний ожидающий платеж пользователя
+        if db_type == 'postgresql':
+            cursor.execute('''
+                SELECT yookassa_payment_id, amount, created_at
+                FROM payments
+                WHERE user_id = %s AND status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (user_id,))
+        else:
+            cursor.execute('''
+                SELECT yookassa_payment_id, amount, created_at
+                FROM payments
+                WHERE user_id = ? AND status = 'pending'
+                ORDER BY created_at DESC
+                LIMIT 1
+            ''', (user_id,))
+        
+        payment = cursor.fetchone()
+        
+        if not payment:
+            return False
+        
+        yookassa_payment_id = payment[0]
+        amount = payment[1]
+        
+        # Проверяем статус платежа через API ЮKassa
+        payment_info = await check_yookassa_payment_status(yookassa_payment_id)
+        
+        if not payment_info:
+            logger.warning(f"Не удалось получить статус платежа {yookassa_payment_id}")
+            return False
+        
+        payment_status = payment_info.get('status')
+        
+        # Обновляем статус в базе
+        update_payment_status(yookassa_payment_id, payment_status, payment_info)
+        
+        # Если платеж успешен, обрабатываем его
+        if payment_status == 'succeeded':
+            logger.info(f"✅ Платеж успешно обработан для пользователя {user_id}, payment_id={yookassa_payment_id}")
+            
+            # Помечаем пользователя как оплатившего
+            mark_user_paid(user_id)
+            
+            # Логируем успешную оплату
+            log_event(user_id, 'payment_success', {
+                'yookassa_payment_id': yookassa_payment_id,
+                'amount': amount,
+                'payment_method': payment_info.get('payment_method', {}).get('type', 'unknown')
+            })
+            
+            # Автоматически запускаем генерацию натальной карты
+            user_data = context.user_data
+            if not user_data.get('birth_name'):
+                loaded_data = load_user_profile(user_id)
+                if loaded_data:
+                    user_data.update(loaded_data)
+            
+            has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+            
+            if has_profile:
+                # Запускаем генерацию натальной карты
+                await handle_natal_chart_request_from_payment(user_id, context)
+            else:
+                # Профиль не заполнен
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="✅ *Оплата получена!*\n\n"
+                         "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
+                         "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                    ]]),
+                    parse_mode='Markdown'
+                )
+            
+            return True
+        
+        elif payment_status in ['canceled', 'pending']:
+            logger.info(f"ℹ️ Платеж {yookassa_payment_id} в статусе {payment_status}")
+            return False
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при проверке платежа: {e}", exc_info=True)
+        return False
+    finally:
+        conn.close()
+
+
+async def handle_natal_chart_request_from_payment(user_id: int, context: ContextTypes.DEFAULT_TYPE):
+    """Запускает генерацию натальной карты после успешной оплаты"""
+    # Создаем фиктивный query объект для вызова handle_natal_chart_request
+    from telegram import CallbackQuery, Message, Chat, User
+    
+    # Создаем минимальные объекты для вызова функции
+    fake_user = User(id=user_id, is_bot=False, first_name="User")
+    fake_chat = Chat(id=user_id, type='private')
+    fake_message = Message(
+        message_id=0,
+        date=datetime.now(),
+        chat=fake_chat,
+        from_user=fake_user
+    )
+    fake_query = CallbackQuery(
+        id=str(uuid.uuid4()),
+        from_user=fake_user,
+        message=fake_message,
+        data='natal_chart'
+    )
+    
+    # Вызываем обработчик генерации натальной карты
+    try:
+        await handle_natal_chart_request(fake_query, context)
+    except Exception as e:
+        logger.error(f"❌ Ошибка при запуске генерации после оплаты: {e}", exc_info=True)
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="✅ *Оплата получена!*\n\n"
+                 "Для начала генерации натальной карты нажмите кнопку ниже:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            ]]),
+            parse_mode='Markdown'
+        )
+
+
+def save_payment_info(user_id: int, yookassa_payment_id: str, internal_payment_id: str, amount: float):
+    """Сохраняет информацию о платеже в базу данных для отслеживания"""
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        # Создаем таблицу для платежей, если её нет
+        if db_type == 'postgresql':
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS payments (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    yookassa_payment_id TEXT UNIQUE,
+                    internal_payment_id TEXT UNIQUE,
+                    amount REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+        else:
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    yookassa_payment_id TEXT UNIQUE,
+                    internal_payment_id TEXT UNIQUE,
+                    amount REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+        
+        # Сохраняем информацию о платеже
+        if db_type == 'postgresql':
+            cursor.execute('''
+                INSERT INTO payments (user_id, yookassa_payment_id, internal_payment_id, amount, status, created_at, updated_at)
+                VALUES (%s, %s, %s, %s, 'pending', %s, %s)
+                ON CONFLICT (yookassa_payment_id) DO UPDATE SET
+                    updated_at = EXCLUDED.updated_at
+            ''', (user_id, yookassa_payment_id, internal_payment_id, amount, datetime.now(), datetime.now()))
+        else:
+            cursor.execute('''
+                INSERT INTO payments (user_id, yookassa_payment_id, internal_payment_id, amount, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 'pending', ?, ?)
+                ON CONFLICT (yookassa_payment_id) DO UPDATE SET
+                    updated_at = excluded.updated_at
+            ''', (user_id, yookassa_payment_id, internal_payment_id, amount, datetime.now().isoformat(), datetime.now().isoformat()))
+        
+        conn.commit()
+        logger.info(f"💾 Информация о платеже сохранена: user_id={user_id}, payment_id={yookassa_payment_id}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при сохранении информации о платеже: {e}", exc_info=True)
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 def _register_reportlab_font() -> str:
@@ -3815,8 +4262,196 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     asyncio.create_task(generate_natal_chart_background(user_id, context))
 
 
+# Глобальная переменная для хранения application (нужна для webhook и проверки платежей)
+telegram_application = None
+
+
+def create_webhook_app(application_instance):
+    """Создает Flask приложение для webhook ЮKassa"""
+    app = Flask(__name__)
+    
+    @app.route('/webhook/yookassa', methods=['POST'])
+    def yookassa_webhook():
+        """Webhook endpoint для получения уведомлений от ЮKassa"""
+        try:
+            # Получаем данные из запроса
+            event_data = request.json
+            
+            if not event_data:
+                logger.warning("Получен пустой webhook от ЮKassa")
+                return jsonify({'status': 'error', 'message': 'Empty request'}), 400
+            
+            event_type = event_data.get('event')
+            payment_object = event_data.get('object', {})
+            
+            logger.info(f"🔔 Получен webhook от ЮKassa: event={event_type}, payment_id={payment_object.get('id')}")
+            
+            # Обрабатываем только события о платежах
+            if event_type == 'payment.succeeded':
+                yookassa_payment_id = payment_object.get('id')
+                payment_status = payment_object.get('status')
+                metadata = payment_object.get('metadata', {})
+                user_id = metadata.get('user_id')
+                amount_value = payment_object.get('amount', {}).get('value')
+                
+                if not user_id:
+                    logger.warning(f"Платеж {yookassa_payment_id} не содержит user_id в metadata")
+                    return jsonify({'status': 'ok'}), 200
+                
+                user_id = int(user_id)
+                
+                # Обновляем статус платежа в базе
+                update_payment_status(yookassa_payment_id, payment_status, payment_object)
+                
+                # Помечаем пользователя как оплатившего
+                mark_user_paid(user_id)
+                
+                # Логируем успешную оплату
+                log_event(user_id, 'payment_success', {
+                    'yookassa_payment_id': yookassa_payment_id,
+                    'amount': amount_value,
+                    'payment_method': payment_object.get('payment_method', {}).get('type', 'unknown'),
+                    'source': 'webhook'
+                })
+                
+                # Запускаем обработку платежа (проверка профиля и запуск генерации)
+                if application_instance:
+                    asyncio.create_task(process_payment_async(user_id, application_instance))
+                
+                logger.info(f"✅ Платеж {yookassa_payment_id} успешно обработан через webhook для пользователя {user_id}")
+                
+            elif event_type == 'payment.canceled':
+                yookassa_payment_id = payment_object.get('id')
+                payment_status = payment_object.get('status')
+                update_payment_status(yookassa_payment_id, payment_status, payment_object)
+                logger.info(f"ℹ️ Платеж {yookassa_payment_id} отменен")
+            
+            return jsonify({'status': 'ok'}), 200
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке webhook от ЮKassa: {e}", exc_info=True)
+            return jsonify({'status': 'error', 'message': str(e)}), 500
+    
+    @app.route('/health', methods=['GET'])
+    def health_check():
+        """Health check endpoint для проверки работоспособности"""
+        return jsonify({'status': 'ok'}), 200
+    
+    return app
+
+
+async def process_payment_async(user_id: int, application):
+    """Асинхронная обработка успешного платежа"""
+    try:
+        # Проверяем и обрабатываем платеж
+        await check_and_process_pending_payment(user_id, application)
+    except Exception as e:
+        logger.error(f"❌ Ошибка при асинхронной обработке платежа: {e}", exc_info=True)
+
+
+async def check_pending_payments_periodically(application):
+    """Периодическая проверка ожидающих платежей"""
+    logger.info("🔄 Запущена периодическая проверка платежей (каждые 2 минуты)")
+    
+    while True:
+        try:
+            await asyncio.sleep(120)  # Проверяем каждые 2 минуты
+            
+            conn, db_type = get_db_connection()
+            cursor = conn.cursor()
+            
+            try:
+                # Находим платежи со статусом 'pending', которые старше 1 минуты
+                if db_type == 'postgresql':
+                    cursor.execute('''
+                        SELECT DISTINCT user_id, yookassa_payment_id
+                        FROM payments
+                        WHERE status = 'pending'
+                        AND created_at < NOW() - INTERVAL '1 minute'
+                        ORDER BY created_at DESC
+                        LIMIT 10
+                    ''')
+                else:
+                    cursor.execute('''
+                        SELECT DISTINCT user_id, yookassa_payment_id
+                        FROM payments
+                        WHERE status = 'pending'
+                        AND datetime(created_at) < datetime('now', '-1 minute')
+                        ORDER BY created_at DESC
+                        LIMIT 10
+                    ''')
+                
+                pending_payments = cursor.fetchall()
+                
+                if pending_payments:
+                    logger.info(f"🔍 Найдено {len(pending_payments)} ожидающих платежей для проверки")
+                    
+                    for user_id, yookassa_payment_id in pending_payments:
+                        try:
+                            # Проверяем статус платежа через API
+                            payment_info = await check_yookassa_payment_status(yookassa_payment_id)
+                            
+                            if payment_info:
+                                payment_status = payment_info.get('status')
+                                
+                                # Обновляем статус в базе
+                                update_payment_status(yookassa_payment_id, payment_status, payment_info)
+                                
+                                # Если платеж успешен, обрабатываем его
+                                if payment_status == 'succeeded':
+                                    logger.info(f"✅ Платеж {yookassa_payment_id} успешно обработан при периодической проверке")
+                                    await check_and_process_pending_payment(user_id, application)
+                            
+                            # Небольшая задержка между проверками
+                            await asyncio.sleep(1)
+                            
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка при проверке платежа {yookassa_payment_id}: {e}", exc_info=True)
+                            
+            finally:
+                conn.close()
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка в периодической проверке платежей: {e}", exc_info=True)
+            await asyncio.sleep(60)  # В случае ошибки ждем минуту перед следующей попыткой
+
+
+def start_webhook_server(application_instance):
+    """Запускает Flask сервер для webhook в отдельном потоке"""
+    webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')
+    
+    if not webhook_url:
+        logger.warning("⚠️ YOOKASSA_WEBHOOK_URL не установлен. Webhook не будет запущен.")
+        logger.info("💡 Webhook не обязателен - платежи будут проверяться периодически.")
+        return None
+    
+    try:
+        # Извлекаем хост и порт из URL (если указан)
+        from urllib.parse import urlparse
+        parsed = urlparse(webhook_url)
+        host = parsed.hostname or '0.0.0.0'
+        port = parsed.port or 8080
+        
+        app = create_webhook_app(application_instance)
+        
+        def run_flask():
+            logger.info(f"🌐 Запуск webhook сервера на {host}:{port}")
+            app.run(host=host, port=port, debug=False, use_reloader=False)
+        
+        webhook_thread = threading.Thread(target=run_flask, daemon=True)
+        webhook_thread.start()
+        logger.info("✅ Webhook сервер запущен в отдельном потоке")
+        
+        return webhook_thread
+    except Exception as e:
+        logger.error(f"❌ Ошибка при запуске webhook сервера: {e}", exc_info=True)
+        return None
+
+
 def main():
     """Запуск бота"""
+    global telegram_application
+    
     TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     
     if not TOKEN:
@@ -3825,6 +4460,7 @@ def main():
     
     # Создаем приложение
     application = Application.builder().token(TOKEN).build()
+    telegram_application = application
     
     # Логирование событий теперь происходит внутри самих обработчиков,
     # чтобы не блокировать обработку команд и callback queries
@@ -3836,6 +4472,9 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
+    
+    # Запускаем webhook сервер в отдельном потоке (если настроен)
+    start_webhook_server(application)
     
     # Задержка перед запуском для предотвращения конфликтов при одновременном старте нескольких инстансов
     time.sleep(2)
@@ -3851,7 +4490,14 @@ def main():
             # Удаляем webhook перед polling (асинхронно через run_polling)
             logger.info(f"Попытка запуска {attempt + 1}/{max_retries}...")
             
+            # Запускаем периодическую проверку платежей после создания application
+            # Используем post_init callback для запуска после инициализации event loop
+            async def post_init(app: Application) -> None:
+                await asyncio.sleep(5)  # Небольшая задержка для инициализации
+                await check_pending_payments_periodically(app)
+            
             # run_polling автоматически удаляет webhook и использует drop_pending_updates
+            application.post_init = post_init
             application.run_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,  # Пропускаем старые обновления
