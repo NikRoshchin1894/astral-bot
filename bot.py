@@ -2283,14 +2283,25 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
                 pass
             return None
             
-    except requests.exceptions.Timeout:
-        logger.error(f"❌ Таймаут при запросе к ЮKassa API для пользователя {user_id}")
+    except requests.exceptions.Timeout as timeout_error:
+        logger.error(f"❌ ТАЙМАУТ при запросе к ЮKassa API для пользователя {user_id}")
+        logger.error(f"   Запрос не был завершен в течение 30 секунд")
+        logger.error(f"   Детали: {timeout_error}")
         return None
-    except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Ошибка сети при запросе к ЮKassa: {e}", exc_info=True)
+    except requests.exceptions.ConnectionError as conn_error:
+        logger.error(f"❌ ОШИБКА ПОДКЛЮЧЕНИЯ к ЮKassa API для пользователя {user_id}")
+        logger.error(f"   Не удалось установить соединение с сервером ЮKassa")
+        logger.error(f"   Детали: {conn_error}")
+        return None
+    except requests.exceptions.RequestException as req_error:
+        logger.error(f"❌ ОШИБКА СЕТИ при запросе к ЮKassa для пользователя {user_id}")
+        logger.error(f"   Тип ошибки: {type(req_error).__name__}")
+        logger.error(f"   Детали: {req_error}", exc_info=True)
         return None
     except Exception as e:
-        logger.error(f"❌ Исключение при создании платежа в ЮKassa: {e}", exc_info=True)
+        logger.error(f"❌ НЕИЗВЕСТНОЕ ИСКЛЮЧЕНИЕ при создании платежа в ЮKassa для пользователя {user_id}")
+        logger.error(f"   Тип: {type(e).__name__}")
+        logger.error(f"   Детали: {e}", exc_info=True)
         return None
 
 
