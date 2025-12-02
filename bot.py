@@ -253,6 +253,21 @@ def init_db():
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             ''')
+            
+            # Таблица для платежей (ЮKassa)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS payments (
+                    id SERIAL PRIMARY KEY,
+                    user_id BIGINT NOT NULL,
+                    yookassa_payment_id TEXT UNIQUE,
+                    internal_payment_id TEXT UNIQUE,
+                    amount REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
         else:
             # SQLite схемы
             cursor.execute('''
@@ -295,6 +310,21 @@ def init_db():
                     event_type TEXT NOT NULL,
                     event_data TEXT,
                     timestamp TEXT NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(user_id)
+                )
+            ''')
+            
+            # Таблица для платежей (ЮKassa)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS payments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    yookassa_payment_id TEXT UNIQUE,
+                    internal_payment_id TEXT UNIQUE,
+                    amount REAL NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (user_id) REFERENCES users(user_id)
                 )
             ''')
@@ -2501,36 +2531,7 @@ def save_payment_info(user_id: int, yookassa_payment_id: str, internal_payment_i
     cursor = conn.cursor()
     
     try:
-        # Создаем таблицу для платежей, если её нет
-        if db_type == 'postgresql':
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS payments (
-                    id SERIAL PRIMARY KEY,
-                    user_id BIGINT NOT NULL,
-                    yookassa_payment_id TEXT UNIQUE,
-                    internal_payment_id TEXT UNIQUE,
-                    amount REAL NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id)
-                )
-            ''')
-        else:
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS payments (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
-                    yookassa_payment_id TEXT UNIQUE,
-                    internal_payment_id TEXT UNIQUE,
-                    amount REAL NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users(user_id)
-                )
-            ''')
-        
+        # Таблица payments должна быть создана в init_db(), но проверяем на всякий случай
         # Сохраняем информацию о платеже
         if db_type == 'postgresql':
             cursor.execute('''
