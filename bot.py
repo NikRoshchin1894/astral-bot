@@ -2286,11 +2286,15 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     logger.info(f"🔑 Создание платежа в ЮKassa: user_id={user_id}, amount={amount_rub}, shop_id={shop_id}")
     logger.debug(f"📦 Payment data: {json.dumps(payment_data, ensure_ascii=False, indent=2)}")
     
+    # Явно определяем URL для платежа
+    payment_api_url = "https://api.yookassa.ru/v3/payments"
+    logger.info(f"🌐 URL для запроса: {payment_api_url}")
+    
     try:
         # Создаем платеж через API ЮKassa (увеличен timeout до 30 секунд)
-        logger.info(f"📤 Отправка запроса к ЮKassa API...")
+        logger.info(f"📤 Отправка POST запроса к ЮKassa API...")
         response = requests.post(
-            "https://api.yookassa.ru/v3/payments",
+            payment_api_url,
             json=payment_data,
             headers=headers,
             timeout=30  # Увеличено с 10 до 30 секунд
