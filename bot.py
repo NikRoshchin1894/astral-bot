@@ -2111,16 +2111,26 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     bot_username = os.getenv('TELEGRAM_BOT_USERNAME', '')
     
     # Используем переменные окружения для URL или формируем по username
-    success_url = os.getenv('PAYMENT_SUCCESS_URL', f'https://t.me/{bot_username}?start=payment_success' if bot_username else '')
-    return_url = os.getenv('PAYMENT_RETURN_URL', f'https://t.me/{bot_username}?start=payment_cancel' if bot_username else '')
+    # Приоритет: сначала проверяем переменные окружения, затем формируем по username
+    success_url_env = os.getenv('PAYMENT_SUCCESS_URL', '')
+    return_url_env = os.getenv('PAYMENT_RETURN_URL', '')
     
-    # Если URL не заданы, логируем предупреждение
-    if not success_url or not return_url:
-        logger.warning("⚠️ PAYMENT_SUCCESS_URL или PAYMENT_RETURN_URL не установлены, используем дефолтные значения")
-        if not success_url:
-            success_url = 'https://t.me/your_bot?start=payment_success'  # Замените на реальный username
-        if not return_url:
-            return_url = 'https://t.me/your_bot?start=payment_cancel'  # Замените на реальный username
+    if success_url_env:
+        success_url = success_url_env
+    elif bot_username:
+        success_url = f'https://t.me/{bot_username}?start=payment_success'
+    else:
+        logger.error("❌ PAYMENT_SUCCESS_URL и TELEGRAM_BOT_USERNAME не установлены!")
+        logger.error("❌ Не могу создать корректный URL для возврата после оплаты")
+        # Используем заглушку как fallback
+        success_url = 'https://t.me/your_bot?start=payment_success'
+    
+    if return_url_env:
+        return_url = return_url_env
+    elif bot_username:
+        return_url = f'https://t.me/{bot_username}?start=payment_cancel'
+    else:
+        return_url = 'https://t.me/your_bot?start=payment_cancel'
     
     logger.info(f"🔗 Success URL: {success_url}")
     logger.info(f"🔗 Return URL: {return_url}")
