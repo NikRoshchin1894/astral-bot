@@ -4316,7 +4316,18 @@ def create_webhook_app(application_instance):
                 
                 # Запускаем обработку платежа (проверка профиля и запуск генерации)
                 if application_instance:
-                    asyncio.create_task(process_payment_async(user_id, application_instance))
+                    # Запускаем в отдельном потоке, т.к. Flask - синхронный
+                    def process_payment_thread():
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            loop.run_until_complete(process_payment_async(user_id, application_instance))
+                            loop.close()
+                        except Exception as e:
+                            logger.error(f"❌ Ошибка при обработке платежа в потоке: {e}", exc_info=True)
+                    
+                    payment_thread = threading.Thread(target=process_payment_thread, daemon=True)
+                    payment_thread.start()
                 
                 logger.info(f"✅ Платеж {yookassa_payment_id} успешно обработан через webhook для пользователя {user_id}")
                 
@@ -4400,7 +4411,13 @@ async def check_pending_payments_periodically(application):
                                 # Если платеж успешен, обрабатываем его
                                 if payment_status == 'succeeded':
                                     logger.info(f"✅ Платеж {yookassa_payment_id} успешно обработан при периодической проверке")
-                                    await check_and_process_pending_payment(user_id, application)
+                                    try:
+                                        # Создаем задачу для обработки платежа через основной event loop
+                                        if application:
+                                            # Используем application для отправки сообщений
+                                            await check_and_process_pending_payment(user_id, application)
+                                    except Exception as process_error:
+                                        logger.error(f"❌ Ошибка при обработке платежа для user_id {user_id}: {process_error}", exc_info=True)
                             
                             # Небольшая задержка между проверками
                             await asyncio.sleep(1)
@@ -4430,13 +4447,17 @@ def start_webhook_server(application_instance):
         from urllib.parse import urlparse
         parsed = urlparse(webhook_url)
         host = parsed.hostname or '0.0.0.0'
-        port = parsed.port or 8080
+        # Порт определяем из переменной окружения или используем дефолтный
+        port = int(os.getenv('WEBHOOK_PORT', '8080'))
         
         app = create_webhook_app(application_instance)
         
         def run_flask():
-            logger.info(f"🌐 Запуск webhook сервера на {host}:{port}")
-            app.run(host=host, port=port, debug=False, use_reloader=False)
+            try:
+                logger.info(f"🌐 Запуск webhook сервера на {host}:{port}")
+                app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+            except Exception as e:
+                logger.error(f"❌ Ошибка в Flask сервере: {e}", exc_info=True)
         
         webhook_thread = threading.Thread(target=run_flask, daemon=True)
         webhook_thread.start()
@@ -4445,6 +4466,7 @@ def start_webhook_server(application_instance):
         return webhook_thread
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске webhook сервера: {e}", exc_info=True)
+        logger.warning("⚠️ Бот продолжит работу без webhook. Платежи будут проверяться периодически.")
         return None
 
 
@@ -4490,14 +4512,22 @@ def main():
             # Удаляем webhook перед polling (асинхронно через run_polling)
             logger.info(f"Попытка запуска {attempt + 1}/{max_retries}...")
             
-            # Запускаем периодическую проверку платежей после создания application
-            # Используем post_init callback для запуска после инициализации event loop
-            async def post_init(app: Application) -> None:
-                await asyncio.sleep(5)  # Небольшая задержка для инициализации
-                await check_pending_payments_periodically(app)
+            # Запускаем периодическую проверку платежей в отдельном потоке
+            def start_payment_checker_background():
+                """Запускает проверку платежей в отдельном потоке с собственным event loop"""
+                time.sleep(5)  # Небольшая задержка для инициализации бота
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(check_pending_payments_periodically(application))
+                except Exception as e:
+                    logger.error(f"❌ Критическая ошибка в потоке проверки платежей: {e}", exc_info=True)
+            
+            payment_checker_thread = threading.Thread(target=start_payment_checker_background, daemon=True)
+            payment_checker_thread.start()
+            logger.info("✅ Запущена фоновая проверка платежей")
             
             # run_polling автоматически удаляет webhook и использует drop_pending_updates
-            application.post_init = post_init
             application.run_polling(
                 allowed_updates=Update.ALL_TYPES,
                 drop_pending_updates=True,  # Пропускаем старые обновления
