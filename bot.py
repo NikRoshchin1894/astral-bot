@@ -2484,7 +2484,7 @@ def generate_pdf_from_markdown(markdown_text: str, title: str, chart_data: Optio
                 fontName=font_name,
             fontSize=15,
                 leading=24, 
-            spaceBefore=20,
+            spaceBefore=0,  # Убран дополнительный отступ перед пронумерованными пунктами
             spaceAfter=14,  # Одинаковые отступы между абзацами как в основном тексте (14pt)
             textColor=cosmic_gold,  # Золотой цвет как у заголовков
             backColor=None,
