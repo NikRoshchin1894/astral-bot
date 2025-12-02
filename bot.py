@@ -2290,14 +2290,25 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     payment_api_url = "https://api.yookassa.ru/v3/payments"
     logger.info(f"🌐 URL для запроса: {payment_api_url}")
     
+    # Проверяем наличие прокси в окружении (может влиять на подключение)
+    proxy_env_vars = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy']
+    proxy_found = False
+    for proxy_var in proxy_env_vars:
+        proxy_value = os.getenv(proxy_var)
+        if proxy_value:
+            logger.info(f"⚠️ Найден прокси в окружении: {proxy_var}={proxy_value}")
+            proxy_found = True
+    if not proxy_found:
+        logger.info("✅ Прокси в окружении не обнаружено")
+    
     try:
-        # Создаем платеж через API ЮKassa (увеличен timeout до 30 секунд)
+        # Создаем платеж через API ЮKassa (timeout 30 секунд)
         logger.info(f"📤 Отправка POST запроса к ЮKassa API...")
         response = requests.post(
             payment_api_url,
             json=payment_data,
             headers=headers,
-            timeout=30  # Увеличено с 10 до 30 секунд
+            timeout=30  # 30 секунд на подключение + чтение ответа
         )
         
         logger.info(f"📡 Ответ от ЮKassa: status={response.status_code}")
@@ -2343,13 +2354,29 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
                 pass
             return None
             
+    except requests.exceptions.ConnectTimeout:
+        logger.error("=" * 60)
+        logger.error(f"❌ ConnectTimeout до api.yookassa.ru для пользователя {user_id}")
+        logger.error(f"   Не удалось установить TCP соединение в течение 30 секунд")
+        logger.error(f"   Это указывает на проблему сети/доступа к api.yookassa.ru")
+        logger.error("=" * 60)
+        return None
+    except requests.exceptions.ReadTimeout:
+        logger.error("=" * 60)
+        logger.error(f"❌ ReadTimeout от api.yookassa.ru для пользователя {user_id}")
+        logger.error(f"   Соединение установлено, но ответ не получен в течение 30 секунд")
+        logger.error(f"   Возможно, API ЮKassa перегружен или медленно отвечает")
+        logger.error("=" * 60)
+        return None
     except requests.exceptions.Timeout as timeout_error:
         logger.error(f"❌ ТАЙМАУТ при запросе к ЮKassa API для пользователя {user_id}")
+        logger.error(f"   Тип таймаута: {type(timeout_error).__name__}")
         logger.error(f"   Запрос не был завершен в течение 30 секунд")
         logger.error(f"   Детали: {timeout_error}")
         return None
     except requests.exceptions.ConnectionError as conn_error:
         logger.error(f"❌ ОШИБКА ПОДКЛЮЧЕНИЯ к ЮKassa API для пользователя {user_id}")
+        logger.error(f"   Тип ошибки: {type(conn_error).__name__}")
         logger.error(f"   Не удалось установить соединение с сервером ЮKassa")
         logger.error(f"   Детали: {conn_error}")
         return None
