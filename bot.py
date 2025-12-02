@@ -776,9 +776,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == 'back_menu':
         await back_to_menu(query)
     elif data == 'buy_natal_chart':
-        # ВРЕМЕННО: Оплата отключена, сразу запускаем генерацию
-        # TODO: Вернуть start_payment_process после настройки платежной системы
-        await handle_natal_chart_request(query, context)
+        await start_payment_process(query, context)
     elif data == 'support':
         await show_support(query, context)
     elif data == 'planets_info':
@@ -1389,8 +1387,21 @@ async def handle_natal_chart_request(query, context):
         )
         return
     
-    # ВРЕМЕННО: Оплата отключена, сразу запускаем генерацию
-    # TODO: Вернуть проверку оплаты после настройки платежной системы
+    # Проверяем, оплатил ли пользователь
+    if not user_has_paid(user_id):
+        # Логируем попытку запроса натальной карты без оплаты
+        log_event(user_id, 'natal_chart_request_no_payment', {})
+        await query.edit_message_text(
+            f"*Для получения натальной карты необходима оплата*\n\n"
+            f"Стоимость: {NATAL_CHART_PRICE_RUB} ₽\n\n"
+            f"Нажмите кнопку ниже, чтобы перейти к оплате:",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"💳 Оплатить {NATAL_CHART_PRICE_RUB} ₽", callback_data='buy_natal_chart'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+            ]]),
+            parse_mode='Markdown'
+        )
+        return
     
     # Логируем начало генерации натальной карты
     log_event(user_id, 'natal_chart_generation_start', {
@@ -1485,8 +1496,12 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
     birth_data = gen_info['birth_data']
     openai_key = gen_info['openai_key']
     
-    # ВРЕМЕННО: Оплата отключена
-    payment_consumed = False
+    # Проверяем оплату пользователя
+    payment_consumed = user_has_paid(user_id)
+    if not payment_consumed:
+        logger.warning(f"⚠️ Пользователь {user_id} пытается сгенерировать натальную карту без оплаты")
+        # Это не должно происходить, т.к. проверка уже была в handle_natal_chart_request
+        # Но на всякий случай проверяем здесь тоже
     
     pdf_error_details = None
     
@@ -1709,8 +1724,8 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                         caption=caption
                     )
 
-                # ВРЕМЕННО: Оплата отключена
-                # payment_consumed = True
+                # Оплата успешно использована
+                payment_consumed = True
                 
                 # Логируем успешную отправку натальной карты
                 log_event(user_id, 'natal_chart_success', {
@@ -1846,11 +1861,10 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
             logger.info(f"🧹 Очистка active_generations для пользователя {user_id}")
             del active_generations[user_id]
         
-        # ВРЕМЕННО: Оплата отключена, не сбрасываем статус оплаты
-        # TODO: Вернуть сброс оплаты после настройки платежной системы
-        # if payment_consumed:
-        #     reset_user_payment(user_id)
-        #     logger.info(f"Оплата сброшена для пользователя {user_id} после успешной генерации натальной карты")
+        # Сбрасываем статус оплаты после успешной генерации
+        if payment_consumed:
+            reset_user_payment(user_id)
+            logger.info(f"Оплата сброшена для пользователя {user_id} после успешной генерации натальной карты")
 
 
 def validate_date(date_str):
