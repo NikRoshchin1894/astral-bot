@@ -1559,6 +1559,9 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
             }
             log_event(user_id, 'natal_chart_error', pdf_error_details)
             
+            # При таймауте оплата НЕ сбрасывается - пользователь может повторить попытку бесплатно
+            payment_consumed = False
+            
             # Отправляем сообщение об ошибке таймаута
             try:
                 await context.bot.edit_message_text(
@@ -1567,6 +1570,7 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                     text="⏱️ *Время ожидания истекло*\n\n"
                          "Генерация натальной карты заняла более 10 минут и была прервана.\n\n"
                          "Это может произойти из-за высокой нагрузки на сервер. Пожалуйста, попробуйте ещё раз.\n\n"
+                         "Оплата сохранена для повторной попытки.\n\n"
                          "Если проблема повторяется, обратитесь в поддержку.",
                     parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup([[
@@ -1614,7 +1618,9 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                 }
             }
             logger.error(f"❌ КРИТИЧНО: PDF не был создан даже fallback для пользователя {user_id}")
-            log_event(user_id, 'natal_chart_error', pdf_error_details)
+            # При ошибке генерации PDF оплата НЕ сбрасывается - пользователь может повторить попытку бесплатно
+            payment_consumed = False
+            log_event(user_id, 'natal_chart_error', {**pdf_error_details, 'payment_kept': True})
             
             # Отправляем сообщение об ошибке пользователю
             try:
@@ -1624,6 +1630,7 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                     text="❌ *Ошибка*\n\n"
                          "К сожалению, не удалось сгенерировать натальную карту.\n"
                          "Попробуйте ещё раз позже.\n\n"
+                         "Оплата сохранена для повторной попытки.\n\n"
                          "Если проблема повторяется, обратитесь в поддержку.",
                     parse_mode='Markdown',
                     reply_markup=InlineKeyboardMarkup([[
@@ -1729,45 +1736,55 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                     safe_name = 'user'
                 filename = f"natal_chart_{safe_name.replace(' ', '_')}.pdf"
                 caption = "📄 Натальная карта в формате PDF"
-                with open(pdf_path, 'rb') as pdf_file:
-                    await context.bot.send_document(
+                pdf_sent_successfully = False
+                try:
+                    with open(pdf_path, 'rb') as pdf_file:
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=pdf_file,
+                            filename=filename,
+                            caption=caption
+                        )
+                    # PDF успешно отправлен - только теперь считаем оплату использованной
+                    pdf_sent_successfully = True
+                    payment_consumed = True
+                    
+                    # Логируем успешную отправку натальной карты
+                    log_event(user_id, 'natal_chart_success', {
+                        'filename': filename,
+                        'birth_date': birth_data.get('date'),
+                        'birth_time': birth_data.get('time'),
+                        'birth_place': birth_data.get('place')
+                    })
+                    
+                    # Отправляем сообщение с кнопкой для возврата в главное меню
+                    menu_keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                    ]])
+                    await context.bot.send_message(
                         chat_id=chat_id,
-                        document=pdf_file,
-                        filename=filename,
-                        caption=caption
+                        text="Используйте кнопки меню для навигации:",
+                        reply_markup=menu_keyboard
                     )
-
-                # Оплата успешно использована
-                payment_consumed = True
-                
-                # Логируем успешную отправку натальной карты
-                log_event(user_id, 'natal_chart_success', {
-                    'filename': filename,
-                    'birth_date': birth_data.get('date'),
-                    'birth_time': birth_data.get('time'),
-                    'birth_place': birth_data.get('place')
-                })
-                
-                # Отправляем сообщение с кнопкой для возврата в главное меню
-                menu_keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
-                ]])
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="Используйте кнопки меню для навигации:",
-                    reply_markup=menu_keyboard
-                )
+                except Exception as send_error:
+                    # Ошибка при отправке PDF - не сбрасываем оплату, чтобы пользователь мог повторить
+                    logger.error(f"❌ Ошибка при отправке PDF: {send_error}", exc_info=True)
+                    raise  # Пробрасываем исключение в блок except выше
             except Exception as pdf_error:
                 error_type = type(pdf_error).__name__
                 error_message = str(pdf_error)
                 logger.error(f"❌ ОШИБКА при отправке PDF пользователю {user_id}: {error_type}: {error_message}", exc_info=True)
+                
+                # При ошибке отправки PDF оплата НЕ должна сбрасываться - пользователь может повторить попытку бесплатно
+                payment_consumed = False
                 
                 log_event(user_id, 'natal_chart_error', {
                     'error_type': error_type,
                     'error_message': error_message,
                     'stage': 'pdf_send',
                     'filename': filename,
-                    'pdf_path': pdf_path if pdf_path else None
+                    'pdf_path': pdf_path if pdf_path else None,
+                    'payment_kept': True  # Отмечаем, что оплата сохранена для повторной попытки
                 })
                 await send_text_message("⚠️ Не удалось отправить PDF. Попробуйте позже.", chat_id, message_id, is_edit=True)
                 # Добавляем кнопку Повторить попытку
@@ -1777,7 +1794,7 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                 ]])
                 await context.bot.send_message(
                     chat_id=chat_id,
-                    text="Вы можете повторить попытку генерации отчёта.",
+                    text="Вы можете повторить попытку генерации отчёта. Оплата сохранена для повторной попытки.",
                     reply_markup=retry_keyboard
                 )
             finally:
@@ -1789,10 +1806,13 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
         else:
             # PDF не был создан
             logger.error(f"❌ PDF не был создан для пользователя {user_id}")
+            # При ошибке создания PDF оплата НЕ сбрасывается - пользователь может повторить попытку бесплатно
+            payment_consumed = False
             log_event(user_id, 'natal_chart_error', {
                 'error_type': 'PDFNotCreated',
                 'error_message': 'PDF generation returned None',
                 'stage': 'pdf_creation',
+                'payment_kept': True,
                 'birth_data': {
                     'date': birth_data.get('date', 'N/A'),
                     'time': birth_data.get('time', 'N/A'),
@@ -1808,7 +1828,7 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
             ]])
             await context.bot.send_message(
                 chat_id=chat_id,
-                text="Вы можете повторить попытку генерации отчёта.",
+                text="Вы можете повторить попытку генерации отчёта. Оплата сохранена для повторной попытки.",
                 reply_markup=retry_keyboard
             )
         
@@ -1823,6 +1843,9 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
             pass
         
         logger.error(f"❌ ОШИБКА при генерации натальной карты для пользователя {user_id}: {error_type}: {error_message}", exc_info=True)
+        
+        # При общей ошибке оплата НЕ сбрасывается - пользователь может повторить попытку бесплатно
+        payment_consumed = False
         
         # Детальное логирование ошибки в базу данных
         error_details = {
@@ -1841,14 +1864,15 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
         if error_traceback:
             error_details['traceback'] = error_traceback[:1000]
         
-        log_event(user_id, 'natal_chart_error', error_details)
+        log_event(user_id, 'natal_chart_error', {**error_details, 'payment_kept': True})
         try:
             await context.bot.edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
                 text="❌ *Ошибка*\n\n"
                      "Произошла ошибка при генерации натальной карты.\n"
-                     "Попробуйте ещё раз.",
+                     "Попробуйте ещё раз.\n\n"
+                     "Оплата сохранена для повторной попытки.",
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("🔄 Попробовать снова", callback_data='natal_chart')],
                     [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
