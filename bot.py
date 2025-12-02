@@ -4567,13 +4567,14 @@ async def check_pending_payments_periodically(application):
             
             try:
                 # Находим платежи со статусом 'pending', которые старше 1 минуты
+                # Для PostgreSQL: при SELECT DISTINCT нужно включать created_at в SELECT для ORDER BY
                 if db_type == 'postgresql':
                     cursor.execute('''
-                        SELECT DISTINCT user_id, yookassa_payment_id
+                        SELECT DISTINCT ON (user_id) user_id, yookassa_payment_id, created_at
                         FROM payments
                         WHERE status = 'pending'
                         AND created_at < NOW() - INTERVAL '1 minute'
-                        ORDER BY created_at DESC
+                        ORDER BY user_id, created_at DESC
                         LIMIT 10
                     ''')
                 else:
