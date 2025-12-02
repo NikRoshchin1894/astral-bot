@@ -14,9 +14,14 @@ load_dotenv()
 # Используем DATABASE_PUBLIC_URL (Railway предоставляет публичный URL для базы данных)
 DATABASE_URL = os.getenv('DATABASE_PUBLIC_URL') or os.getenv('DATABASE_URL')
 
-# Можно передать DATABASE_URL через аргумент командной строки
+# Проверяем аргументы: если первый аргумент - это DATABASE_URL (начинается с postgresql://), используем его
+# Иначе это username для поиска
+username_arg = None
 if len(sys.argv) > 1:
-    DATABASE_URL = sys.argv[1]
+    if sys.argv[1].startswith('postgresql://'):
+        DATABASE_URL = sys.argv[1]
+    else:
+        username_arg = sys.argv[1].replace('@', '')
 
 if not DATABASE_URL:
     print("❌ DATABASE_PUBLIC_URL или DATABASE_URL не найдена!")
@@ -45,16 +50,28 @@ try:
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     print("✅ Подключение успешно!\n")
     
-    # Ищем пользователя по имени
-    print("🔍 Поиск пользователя 'Александр'...\n")
-    cursor.execute("""
-        SELECT user_id, first_name, birth_date, birth_time, birth_place, 
-               country, city, username, updated_at
-        FROM users 
-        WHERE first_name ILIKE %s
-        ORDER BY updated_at DESC
-        LIMIT 10
-    """, ('%Александр%',))
+    # Если передан username через аргумент, ищем по нему
+    # Ищем пользователя по username или имени
+    if username_arg:
+        print(f"🔍 Поиск пользователя по username @{username_arg}...\n")
+        cursor.execute("""
+            SELECT user_id, first_name, birth_date, birth_time, birth_place, 
+                   country, city, username, updated_at
+            FROM users 
+            WHERE username = %s
+            ORDER BY updated_at DESC
+            LIMIT 10
+        """, (username_arg,))
+    else:
+        print("🔍 Поиск пользователя 'Александр'...\n")
+        cursor.execute("""
+            SELECT user_id, first_name, birth_date, birth_time, birth_place, 
+                   country, city, username, updated_at
+            FROM users 
+            WHERE first_name ILIKE %s
+            ORDER BY updated_at DESC
+            LIMIT 10
+        """, ('%Александр%',))
     
     users = cursor.fetchall()
     
