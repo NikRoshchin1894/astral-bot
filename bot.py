@@ -1210,7 +1210,7 @@ async def start_payment_process(query, context):
     try:
         await query.message.reply_invoice(
             title='Натальная карта',
-            description=f'Подробная натальная карта в PDF-формате. Стоимость {NATAL_CHART_PRICE_RUB} ₽.',
+            description='После оплаты сразу приступлю к подготовке отчета!✨',
             payload=payload,
             provider_token=provider_token,
             currency='RUB',
@@ -1228,9 +1228,8 @@ async def start_payment_process(query, context):
         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
     ]])
     await query.message.reply_text(
-        "*После оплаты сразу приступлю к подготовке отчета!*✨",
-        reply_markup=menu_keyboard,
-        parse_mode='Markdown'
+        "Если хотите вернуться, нажмите «Главное меню».",
+        reply_markup=menu_keyboard
     )
 
 
