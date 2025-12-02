@@ -1286,8 +1286,39 @@ async def start_payment_process(query, context):
         
         if not payment_url:
             logger.error(f"❌ Не удалось создать ссылку на оплату для пользователя {user_id}")
-            await query.answer("Ошибка при создании ссылки на оплату. Попробуйте позже.", show_alert=True)
+            await query.answer("Ошибка при создании ссылки на оплату", show_alert=True)
             log_event(user_id, 'payment_error', {'error': 'payment_link_creation_failed'})
+            
+            # Отправляем сообщение с ошибкой и кнопками для повторной попытки
+            try:
+                await query.edit_message_text(
+                    "❌ *Ошибка создания ссылки на оплату*\n\n"
+                    "Не удалось создать ссылку для оплаты.\n\n"
+                    "Возможные причины:\n"
+                    "• Проблемы с API ЮKassa\n"
+                    "• Таймаут запроса\n"
+                    "• Неверные настройки оплаты\n\n"
+                    "Пожалуйста, попробуйте позже или обратитесь в поддержку.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔄 Попробовать снова", callback_data='buy_natal_chart'),
+                        InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                    ]]),
+                    parse_mode='Markdown'
+                )
+            except Exception as edit_error:
+                logger.warning(f"Не удалось отредактировать сообщение: {edit_error}, отправляем новое")
+                await query.message.reply_text(
+                    "❌ *Ошибка создания ссылки на оплату*\n\n"
+                    "Не удалось создать ссылку для оплаты.\n\n"
+                    "Пожалуйста, попробуйте позже или обратитесь в поддержку.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔄 Попробовать снова", callback_data='buy_natal_chart'),
+                        InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                    ]]),
+                    parse_mode='Markdown'
+                )
             return
         
         logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}")
