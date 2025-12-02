@@ -66,14 +66,19 @@ logger = logging.getLogger(__name__)
 
 # База данных
 # Используем PostgreSQL на Railway, SQLite локально
-DATABASE_URL = os.getenv('DATABASE_URL')
+# Приоритет: сначала DATABASE_PUBLIC_URL, потом DATABASE_URL (для обратной совместимости)
+DATABASE_URL = os.getenv('DATABASE_PUBLIC_URL') or os.getenv('DATABASE_URL')
 DATABASE = 'users.db'  # Для SQLite локально
 
 # Логируем состояние DATABASE_URL при запуске
 if DATABASE_URL:
-    logger.info(f"✅ DATABASE_URL найдена (первые 20 символов: {DATABASE_URL[:20]}...)")
+    logger.info(f"✅ База данных найдена (первые 20 символов: {DATABASE_URL[:20]}...)")
+    if os.getenv('DATABASE_PUBLIC_URL'):
+        logger.info("Используется DATABASE_PUBLIC_URL")
+    elif os.getenv('DATABASE_URL'):
+        logger.info("Используется DATABASE_URL")
 else:
-    logger.warning("⚠️ DATABASE_URL не найдена в переменных окружения! Используется SQLite.")
+    logger.warning("⚠️ DATABASE_PUBLIC_URL и DATABASE_URL не найдены в переменных окружения! Используется SQLite.")
 
 def get_db_connection():
     """Получает соединение с базой данных (PostgreSQL или SQLite)"""
@@ -1263,14 +1268,28 @@ async def start_payment_process(query, context):
             [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
         ])
         
-        await query.message.reply_text(
-            f"*Оплата натальной карты*\n\n"
-            f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
-            f"Нажмите кнопку ниже, чтобы перейти на страницу оплаты.\n\n"
-            f"*После оплаты сразу приступлю к подготовке отчета!*✨",
-            reply_markup=payment_keyboard,
-            parse_mode='Markdown'
-        )
+        try:
+            # Пытаемся редактировать сообщение, если возможно
+            await query.edit_message_text(
+                f"*Оплата натальной карты*\n\n"
+                f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
+                f"Нажмите кнопку ниже, чтобы перейти на страницу оплаты.\n\n"
+                f"*После оплаты сразу приступлю к подготовке отчета!*✨",
+                reply_markup=payment_keyboard,
+                parse_mode='Markdown'
+            )
+            logger.info(f"✅ Сообщение с кнопкой оплаты успешно отправлено пользователю {user_id}")
+        except Exception as edit_error:
+            # Если не удалось отредактировать, отправляем новое сообщение
+            logger.warning(f"Не удалось отредактировать сообщение: {edit_error}, отправляем новое")
+            await query.message.reply_text(
+                f"*Оплата натальной карты*\n\n"
+                f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
+                f"Нажмите кнопку ниже, чтобы перейти на страницу оплаты.\n\n"
+                f"*После оплаты сразу приступлю к подготовке отчета!*✨",
+                reply_markup=payment_keyboard,
+                parse_mode='Markdown'
+            )
         
     except Exception as payment_error:
         logger.error(f"❌ Ошибка при создании ссылки на оплату: {payment_error}", exc_info=True)
@@ -2086,9 +2105,25 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     payment_id = f"natal_chart_{user_id}_{uuid.uuid4().hex[:8]}"
     
     # URL для уведомлений (webhook)
-    webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')  # Нужно будет настроить webhook endpoint
-    success_url = os.getenv('PAYMENT_SUCCESS_URL', f'https://t.me/{(os.getenv("TELEGRAM_BOT_TOKEN", "") or "bot").split(":")[0]}?start=payment_success')
-    return_url = os.getenv('PAYMENT_RETURN_URL', f'https://t.me/{(os.getenv("TELEGRAM_BOT_TOKEN", "") or "bot").split(":")[0]}?start=payment_cancel')
+    webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')
+    
+    # Формируем URL для возврата после оплаты
+    bot_username = os.getenv('TELEGRAM_BOT_USERNAME', '')
+    
+    # Используем переменные окружения для URL или формируем по username
+    success_url = os.getenv('PAYMENT_SUCCESS_URL', f'https://t.me/{bot_username}?start=payment_success' if bot_username else '')
+    return_url = os.getenv('PAYMENT_RETURN_URL', f'https://t.me/{bot_username}?start=payment_cancel' if bot_username else '')
+    
+    # Если URL не заданы, логируем предупреждение
+    if not success_url or not return_url:
+        logger.warning("⚠️ PAYMENT_SUCCESS_URL или PAYMENT_RETURN_URL не установлены, используем дефолтные значения")
+        if not success_url:
+            success_url = 'https://t.me/your_bot?start=payment_success'  # Замените на реальный username
+        if not return_url:
+            return_url = 'https://t.me/your_bot?start=payment_cancel'  # Замените на реальный username
+    
+    logger.info(f"🔗 Success URL: {success_url}")
+    logger.info(f"🔗 Return URL: {return_url}")
     
     # Подготовка данных для создания платежа
     payment_data = {
@@ -2137,6 +2172,9 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
         "Idempotence-Key": payment_id
     }
     
+    logger.info(f"🔑 Создание платежа в ЮKassa: user_id={user_id}, amount={amount_rub}, shop_id={shop_id[:10]}...")
+    logger.debug(f"📦 Payment data: {json.dumps(payment_data, ensure_ascii=False, indent=2)}")
+    
     try:
         # Создаем платеж через API ЮKassa
         response = requests.post(
@@ -2146,24 +2184,40 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
             timeout=10
         )
         
+        logger.info(f"📡 Ответ от ЮKassa: status={response.status_code}")
+        
         if response.status_code == 200:
             payment_info = response.json()
             payment_url = payment_info.get("confirmation", {}).get("confirmation_url")
             
             if payment_url:
-                logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}: {payment_info.get('id')}")
+                payment_yookassa_id = payment_info.get('id')
+                logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}: payment_id={payment_yookassa_id}")
+                logger.info(f"🔗 Payment URL: {payment_url}")
                 
                 # Сохраняем информацию о платеже в базу для отслеживания
-                save_payment_info(user_id, payment_info.get('id'), payment_id, amount_rub)
+                save_payment_info(user_id, payment_yookassa_id, payment_id, amount_rub)
                 
                 return payment_url
             else:
-                logger.error(f"❌ ЮKassa вернула платеж без URL подтверждения: {payment_info}")
+                logger.error(f"❌ ЮKassa вернула платеж без URL подтверждения. Ответ: {json.dumps(payment_info, ensure_ascii=False)}")
                 return None
         else:
-            logger.error(f"❌ Ошибка при создании платежа в ЮKassa: {response.status_code} - {response.text}")
+            logger.error(f"❌ Ошибка при создании платежа в ЮKassa: status={response.status_code}")
+            logger.error(f"📄 Ответ сервера: {response.text}")
+            try:
+                error_details = response.json()
+                logger.error(f"📋 Детали ошибки: {json.dumps(error_details, ensure_ascii=False, indent=2)}")
+            except:
+                pass
             return None
             
+    except requests.exceptions.Timeout:
+        logger.error(f"❌ Таймаут при запросе к ЮKassa API для пользователя {user_id}")
+        return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Ошибка сети при запросе к ЮKassa: {e}", exc_info=True)
+        return None
     except Exception as e:
         logger.error(f"❌ Исключение при создании платежа в ЮKassa: {e}", exc_info=True)
         return None
