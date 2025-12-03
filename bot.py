@@ -823,7 +823,21 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки"""
     query = update.callback_query
-    await query.answer()
+    
+    # Отвечаем на callback query как можно раньше
+    # Обрабатываем ошибку, если query уже истек (старые запросы)
+    try:
+        await query.answer()
+    except BadRequest as bad_request_error:
+        # Игнорируем ошибку BadRequest для старых queries - это не критично для работы бота
+        # Пользователь уже получил ответ или query был слишком старым
+        if "Query is too old" in str(bad_request_error) or "query id is invalid" in str(bad_request_error):
+            logger.debug(f"Callback query истек или недействителен (не критично): {bad_request_error}")
+        else:
+            logger.warning(f"BadRequest при ответе на callback query: {bad_request_error}")
+    except Exception as answer_error:
+        # Обрабатываем другие ошибки
+        logger.debug(f"Не удалось ответить на callback query: {answer_error}")
     
     user_id = query.from_user.id
     data = query.data
