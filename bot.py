@@ -1289,7 +1289,9 @@ async def start_payment_process(query, context):
             title="Натальная карта",
             description=description,
             payload=payment_payload,
-            provider_token=provider_token if provider_token else None,  # Может быть None, если настроено через BotFather
+            # provider_token обязателен для работы платежей
+            # Его можно получить через @BotFather -> Payments или установить в TELEGRAM_PAYMENT_PROVIDER_TOKEN
+            provider_token=provider_token if provider_token else os.getenv('TELEGRAM_PAYMENT_PROVIDER_TOKEN', ''),
             currency="RUB",
             prices=[LabeledPrice("Натальная карта", NATAL_CHART_PRICE_MINOR)],  # Цена в копейках
             start_parameter=payment_payload,
