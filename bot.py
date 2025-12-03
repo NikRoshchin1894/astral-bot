@@ -2372,10 +2372,30 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
         logger.error(f"   Детали: {timeout_error}")
         return None
     except requests.exceptions.ConnectionError as conn_error:
+        error_str = str(conn_error)
+        logger.error("=" * 60)
         logger.error(f"❌ ОШИБКА ПОДКЛЮЧЕНИЯ к ЮKassa API для пользователя {user_id}")
         logger.error(f"   Тип ошибки: {type(conn_error).__name__}")
-        logger.error(f"   Не удалось установить соединение с сервером ЮKassa")
-        logger.error(f"   Детали: {conn_error}")
+        logger.error(f"   Детали: {error_str}")
+        
+        # Проверяем тип ConnectionError
+        if "RemoteDisconnected" in error_str or "Remote end closed connection" in error_str:
+            logger.error("   🔍 Сервер ЮKassa закрыл соединение без ответа")
+            logger.error("   💡 Возможные причины:")
+            logger.error("      • Проблемы на стороне API ЮKassa (перегрузка, временная недоступность)")
+            logger.error("      • Блокировка соединений на уровне сети (firewall, rate limiting)")
+            logger.error("      • Проблемы с keep-alive соединениями")
+            logger.error("   💡 Рекомендация: Попробуйте повторить запрос через несколько секунд")
+        elif "NewConnectionError" in error_str or "Failed to establish" in error_str:
+            logger.error("   🔍 Не удалось установить TCP соединение")
+            logger.error("   💡 Возможные причины:")
+            logger.error("      • Недоступность api.yookassa.ru")
+            logger.error("      • Проблемы с DNS")
+            logger.error("      • Блокировка на уровне сети")
+        else:
+            logger.error("   🔍 Общая ошибка соединения")
+        
+        logger.error("=" * 60)
         return None
     except requests.exceptions.RequestException as req_error:
         logger.error(f"❌ ОШИБКА СЕТИ при запросе к ЮKassa для пользователя {user_id}")
