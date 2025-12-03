@@ -5,11 +5,14 @@ FROM python:3.9-slim
 WORKDIR /app
 
 # Устанавливаем системные зависимости
-RUN apt-get update && apt-get install -y \
+# Очищаем кэш перед обновлением для стабильности
+RUN apt-get clean && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
     build-essential \
     git \
     swig \
-    libswisseph-dev \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
