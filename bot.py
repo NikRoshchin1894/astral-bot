@@ -1889,33 +1889,33 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                 pdf_sent_successfully = False
                 try:
                     with open(pdf_path, 'rb') as pdf_file:
-                    await context.bot.send_document(
-                        chat_id=chat_id,
-                        document=pdf_file,
-                        filename=filename,
-                        caption=caption
-                    )
+                        await context.bot.send_document(
+                            chat_id=chat_id,
+                            document=pdf_file,
+                            filename=filename,
+                            caption=caption
+                        )
                     # PDF успешно отправлен - только теперь считаем оплату использованной
                     pdf_sent_successfully = True
                     payment_consumed = True
                 
-                # Логируем успешную отправку натальной карты
-                log_event(user_id, 'natal_chart_success', {
-                    'filename': filename,
-                    'birth_date': birth_data.get('date'),
-                    'birth_time': birth_data.get('time'),
-                    'birth_place': birth_data.get('place')
-                })
-                
-                # Отправляем сообщение с кнопкой для возврата в главное меню
-                menu_keyboard = InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
-                ]])
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="Используйте кнопки меню для навигации:",
-                    reply_markup=menu_keyboard
-                )
+                    # Логируем успешную отправку натальной карты
+                    log_event(user_id, 'natal_chart_success', {
+                        'filename': filename,
+                        'birth_date': birth_data.get('date'),
+                        'birth_time': birth_data.get('time'),
+                        'birth_place': birth_data.get('place')
+                    })
+                    
+                    # Отправляем сообщение с кнопкой для возврата в главное меню
+                    menu_keyboard = InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+                    ]])
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="Используйте кнопки меню для навигации:",
+                        reply_markup=menu_keyboard
+                    )
                 except Exception as send_error:
                     # Ошибка при отправке PDF - не сбрасываем оплату, чтобы пользователь мог повторить
                     logger.error(f"❌ Ошибка при отправке PDF: {send_error}", exc_info=True)
