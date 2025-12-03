@@ -2175,24 +2175,44 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     logger.info(f"🔗 Success URL: {success_url}")
     logger.info(f"🔗 Return URL: {return_url}")
     
+    # Валидация return_url (должен быть валидным HTTPS URL)
+    if not return_url.startswith('https://'):
+        logger.error(f"❌ return_url должен начинаться с https://, получен: {return_url}")
+        return None
+    
     # Подготовка данных для создания платежа
     # Минимальный набор полей согласно документации ЮKassa API v3
+    # https://yookassa.ru/developers/payment-acceptance/getting-started/quick-start
+    
+    # Форматируем amount.value как строку с двумя знаками после запятой (требование API)
+    amount_value_str = f"{amount_rub:.2f}"
+    
+    # Проверяем, что amount не отрицательный и не нулевой
+    if amount_rub <= 0:
+        logger.error(f"❌ Сумма платежа должна быть больше 0, получено: {amount_rub}")
+        return None
+    
     payment_data = {
         "amount": {
-            "value": f"{amount_rub:.2f}",
+            "value": amount_value_str,  # Строка с двумя знаками после запятой
             "currency": "RUB"
         },
         "confirmation": {
             "type": "redirect",
-            "return_url": return_url
+            "return_url": return_url  # Обязательное поле для redirect типа
         },
-        "capture": True,
-        "description": description,
+        "capture": True,  # Автоматическое подтверждение платежа
+        "description": description,  # Описание платежа (максимум 128 символов)
         "metadata": {
             "user_id": str(user_id),
             "payment_type": "natal_chart"
         }
     }
+    
+    # Проверяем длину description (максимум 128 символов по документации)
+    if len(description) > 128:
+        logger.warning(f"⚠️ Description слишком длинный ({len(description)} символов), обрезаем до 128")
+        payment_data["description"] = description[:125] + "..."
     
     # ВАЖНО: receipt - это фискальные данные, не связаны с webhook
     # Receipt нужен только если требуется фискализация
@@ -2257,20 +2277,31 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
         
         if response.status_code == 200:
             payment_info = response.json()
-            payment_url = payment_info.get("confirmation", {}).get("confirmation_url")
             
-            if payment_url:
-                payment_yookassa_id = payment_info.get('id')
-                logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}: payment_id={payment_yookassa_id}")
-                logger.info(f"🔗 Payment URL: {payment_url}")
-                
-                # Сохраняем информацию о платеже в базу для отслеживания
-                save_payment_info(user_id, payment_yookassa_id, payment_id, amount_rub)
-                
-                return payment_url
-            else:
+            # Проверяем структуру ответа согласно документации
+            # Ответ должен содержать: id, status, confirmation.confirmation_url
+            payment_yookassa_id = payment_info.get('id')
+            payment_status = payment_info.get('status')
+            confirmation = payment_info.get('confirmation', {})
+            payment_url = confirmation.get('confirmation_url')
+            
+            if not payment_yookassa_id:
+                logger.error(f"❌ ЮKassa вернула платеж без ID. Ответ: {json.dumps(payment_info, ensure_ascii=False)}")
+                return None
+            
+            if not payment_url:
                 logger.error(f"❌ ЮKassa вернула платеж без URL подтверждения. Ответ: {json.dumps(payment_info, ensure_ascii=False)}")
                 return None
+            
+            logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}")
+            logger.info(f"   Payment ID: {payment_yookassa_id}")
+            logger.info(f"   Status: {payment_status}")
+            logger.info(f"   Payment URL: {payment_url}")
+            
+            # Сохраняем информацию о платеже в базу для отслеживания
+            save_payment_info(user_id, payment_yookassa_id, payment_id, amount_rub)
+            
+            return payment_url
         else:
             logger.error(f"❌ Ошибка при создании платежа в ЮKassa: status={response.status_code}")
             logger.error(f"📄 Ответ сервера: {response.text}")
