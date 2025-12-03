@@ -1260,12 +1260,30 @@ async def start_payment_process(query, context):
     })
     
     # Получаем provider_token из переменных окружения
-    # Если не установлен, используем None (для тестового режима или если настроен через BotFather)
-    provider_token = os.getenv('TELEGRAM_PAYMENT_PROVIDER_TOKEN', '')
+    # provider_token обязателен для работы платежей через Telegram Invoice API
+    provider_token = os.getenv('TELEGRAM_PAYMENT_PROVIDER_TOKEN', '').strip()
     
     if not provider_token:
-        logger.warning(f"TELEGRAM_PAYMENT_PROVIDER_TOKEN не установлен, попытка отправить invoice без provider_token")
-        # Можно попробовать отправить без provider_token, если настроено через BotFather
+        logger.error(f"❌ TELEGRAM_PAYMENT_PROVIDER_TOKEN не установлен для пользователя {user_id}")
+        log_event(user_id, 'payment_error', {'error': 'payment_provider_token_not_set'})
+        
+        await query.message.reply_text(
+            "❌ *Ошибка настройки платежей*\n\n"
+            "Платежный провайдер не настроен.\n\n"
+            "*Как настроить:*\n"
+            "1. Откройте @BotFather в Telegram\n"
+            "2. Выберите вашего бота\n"
+            "3. Перейдите в раздел \"Payments\"\n"
+            "4. Настройте Payment Provider\n\n"
+            "После настройки платежи заработают автоматически.\n\n"
+            "Если проблема сохраняется, обратитесь в поддержку.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
+            ]]),
+            parse_mode='Markdown'
+        )
+        return
     
     # Создаем уникальный payload для платежа
     payment_payload = f"natal_chart_{user_id}_{uuid.uuid4().hex[:8]}"
@@ -1289,9 +1307,7 @@ async def start_payment_process(query, context):
             title="Натальная карта",
             description=description,
             payload=payment_payload,
-            # provider_token обязателен для работы платежей
-            # Его можно получить через @BotFather -> Payments или установить в TELEGRAM_PAYMENT_PROVIDER_TOKEN
-            provider_token=provider_token if provider_token else os.getenv('TELEGRAM_PAYMENT_PROVIDER_TOKEN', ''),
+            provider_token=provider_token,  # Обязательный параметр
             currency="RUB",
             prices=[LabeledPrice("Натальная карта", NATAL_CHART_PRICE_MINOR)],  # Цена в копейках
             start_parameter=payment_payload,
