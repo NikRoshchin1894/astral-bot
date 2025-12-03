@@ -1244,143 +1244,86 @@ async def select_edit_field(query, context):
 
 
 async def start_payment_process(query, context):
-    """Начало процесса оплаты через ЮKassa (внешняя ссылка)"""
+    """Начало процесса оплаты через Telegram Invoice API (встроенная оплата)"""
     user_id = query.from_user.id
     
-    # ВАЖНО: Отвечаем на callback query СРАЗУ, чтобы избежать timeout
-    # Telegram требует ответа на callback query в течение ~30 секунд
+    # Отвечаем на callback query
     try:
-        await query.answer("⏳ Создаю ссылку на оплату...")
+        await query.answer()
     except Exception as answer_error:
-        logger.warning(f"Не удалось ответить на callback query (возможно, уже истек): {answer_error}")
+        logger.warning(f"Не удалось ответить на callback query: {answer_error}")
     
     # Логируем начало процесса оплаты
     log_event(user_id, 'payment_start', {
         'amount_rub': NATAL_CHART_PRICE_RUB,
-        'payment_provider': 'yookassa'
+        'payment_provider': 'telegram_invoice'
     })
     
-    # Проверяем наличие необходимых ключей ЮKassa
-    shop_id = os.getenv('YOOKASSA_SHOP_ID')
-    secret_key = os.getenv('YOOKASSA_SECRET_KEY')
+    # Получаем provider_token из переменных окружения
+    # Если не установлен, используем None (для тестового режима или если настроен через BotFather)
+    provider_token = os.getenv('TELEGRAM_PAYMENT_PROVIDER_TOKEN', '')
     
-    if not shop_id or not secret_key:
-        logger.error(f"YOOKASSA_SHOP_ID или YOOKASSA_SECRET_KEY не установлены для пользователя {user_id}")
+    if not provider_token:
+        logger.warning(f"TELEGRAM_PAYMENT_PROVIDER_TOKEN не установлен, попытка отправить invoice без provider_token")
+        # Можно попробовать отправить без provider_token, если настроено через BotFather
+    
+    # Создаем уникальный payload для платежа
+    payment_payload = f"natal_chart_{user_id}_{uuid.uuid4().hex[:8]}"
+    
+    # Описание услуги
+    description = (
+        "Натальная карта - детальный астрологический разбор\n\n"
+        "• Особенности личности на основе Солнца и Луны\n"
+        "• Как вас видят другие люди\n"
+        "• Сильные и слабые стороны\n"
+        "• Карьерный потенциал\n"
+        "• Романтические отношения\n"
+        "• Физическая активность и здоровье\n"
+        "• Предназначение на эту жизнь"
+    )
+    
+    try:
+        # Отправляем invoice через Telegram API
+        await context.bot.send_invoice(
+            chat_id=user_id,
+            title="Натальная карта",
+            description=description,
+            payload=payment_payload,
+            provider_token=provider_token if provider_token else None,  # Может быть None, если настроено через BotFather
+            currency="RUB",
+            prices=[LabeledPrice("Натальная карта", NATAL_CHART_PRICE_MINOR)],  # Цена в копейках
+            start_parameter=payment_payload,
+            photo_url=None,  # Можно добавить URL изображения
+            need_name=False,
+            need_phone_number=False,
+            need_email=False,
+            need_shipping_address=False,
+            send_phone_number_to_provider=False,
+            send_email_to_provider=False,
+            is_flexible=False,
+            reply_markup=None
+        )
+        
+        logger.info(f"✅ Invoice отправлен пользователю {user_id}, payload={payment_payload}")
+        
+    except Exception as invoice_error:
+        logger.error(f"❌ Ошибка при отправке invoice пользователю {user_id}: {invoice_error}", exc_info=True)
+        log_event(user_id, 'payment_error', {'error': str(invoice_error), 'stage': 'invoice_sending'})
+        
         try:
             await query.message.reply_text(
-                "❌ *Ошибка настройки оплаты*\n\n"
-                "Настройка оплаты не завершена.\n\n"
-                "Обратитесь в поддержку для решения проблемы.",
+                "❌ *Ошибка при создании счета на оплату*\n\n"
+                "Не удалось создать счет для оплаты.\n\n"
+                "Пожалуйста, попробуйте позже или обратитесь в поддержку.",
                 reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔄 Попробовать снова", callback_data='buy_natal_chart'),
                     InlineKeyboardButton("💬 Поддержка", callback_data='support'),
                     InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
                 ]]),
                 parse_mode='Markdown'
             )
         except Exception as send_error:
-            logger.error(f"Не удалось отправить сообщение об ошибке: {send_error}")
-        log_event(user_id, 'payment_error', {'error': 'yookassa_credentials_not_set'})
-        return
-    
-    logger.info(f"💰 Создание ссылки на оплату через ЮKassa: цена = {NATAL_CHART_PRICE_RUB} ₽")
-    
-    # Показываем пользователю, что идет обработка
-    try:
-        await query.message.edit_text(
-            "⏳ *Создание ссылки на оплату...*\n\n"
-            "Пожалуйста, подождите несколько секунд.",
-            parse_mode='Markdown'
-        )
-    except Exception as edit_error:
-        logger.warning(f"Не удалось отредактировать сообщение: {edit_error}")
-    
-    try:
-        # Выполняем запрос к ЮKassa в отдельном потоке, чтобы не блокировать event loop
-        import asyncio
-        loop = asyncio.get_event_loop()
-        payment_url = await loop.run_in_executor(
-            None,
-            lambda: create_yookassa_payment_link(
-                user_id=user_id,
-                amount_rub=NATAL_CHART_PRICE_RUB,
-                description="Натальная карта - детальный астрологический разбор"
-            )
-        )
-        
-        if not payment_url:
-            logger.error(f"❌ Не удалось создать ссылку на оплату для пользователя {user_id}")
-            log_event(user_id, 'payment_error', {'error': 'payment_link_creation_failed'})
-            
-            # Отправляем сообщение с ошибкой и кнопками для повторной попытки
-            try:
-                await query.message.edit_text(
-                    "❌ *Ошибка создания ссылки на оплату*\n\n"
-                    "Не удалось создать ссылку для оплаты.\n\n"
-                    "Возможные причины:\n"
-                    "• Проблемы с API ЮKassa\n"
-                    "• Таймаут запроса\n"
-                    "• Неверные настройки оплаты\n\n"
-                    "Пожалуйста, попробуйте позже или обратитесь в поддержку.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("🔄 Попробовать снова", callback_data='buy_natal_chart'),
-                        InlineKeyboardButton("💬 Поддержка", callback_data='support'),
-                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
-                    ]]),
-                    parse_mode='Markdown'
-                )
-            except Exception as edit_error:
-                logger.warning(f"Не удалось отредактировать сообщение: {edit_error}, отправляем новое")
-                try:
-                    await query.message.reply_text(
-                        "❌ *Ошибка создания ссылки на оплату*\n\n"
-                        "Не удалось создать ссылку для оплаты.\n\n"
-                        "Пожалуйста, попробуйте позже или обратитесь в поддержку.",
-                        reply_markup=InlineKeyboardMarkup([[
-                            InlineKeyboardButton("🔄 Попробовать снова", callback_data='buy_natal_chart'),
-                            InlineKeyboardButton("💬 Поддержка", callback_data='support'),
-                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')
-                        ]]),
-                        parse_mode='Markdown'
-                    )
-                except Exception as send_error:
-                    logger.error(f"Критическая ошибка: не удалось отправить сообщение об ошибке: {send_error}")
-            return
-
-        logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}")
-        
-        # Отправляем сообщение с кнопкой для перехода на оплату
-        payment_keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 Перейти к оплате", url=payment_url)],
-            [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
-        ])
-        
-        try:
-            # Пытаемся редактировать сообщение, если возможно
-            await query.edit_message_text(
-                f"*Оплата натальной карты*\n\n"
-                f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
-                f"Нажмите кнопку ниже, чтобы перейти на страницу оплаты.\n\n"
-                f"*После оплаты сразу приступлю к подготовке отчета!*✨",
-                reply_markup=payment_keyboard,
-                parse_mode='Markdown'
-            )
-            logger.info(f"✅ Сообщение с кнопкой оплаты успешно отправлено пользователю {user_id}")
-        except Exception as edit_error:
-            # Если не удалось отредактировать, отправляем новое сообщение
-            logger.warning(f"Не удалось отредактировать сообщение: {edit_error}, отправляем новое")
-            await query.message.reply_text(
-                f"*Оплата натальной карты*\n\n"
-                f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
-                f"Нажмите кнопку ниже, чтобы перейти на страницу оплаты.\n\n"
-                f"*После оплаты сразу приступлю к подготовке отчета!*✨",
-                reply_markup=payment_keyboard,
-                parse_mode='Markdown'
-            )
-        
-    except Exception as payment_error:
-        logger.error(f"❌ Ошибка при создании ссылки на оплату: {payment_error}", exc_info=True)
-        log_event(user_id, 'payment_error', {'error': str(payment_error), 'stage': 'payment_link_creation'})
-        await query.answer("Ошибка при создании ссылки на оплату. Попробуйте позже.", show_alert=True)
+            logger.error(f"Критическая ошибка: не удалось отправить сообщение об ошибке: {send_error}")
 
 
 async def start_edit_field(query, context, field_type):
@@ -4306,10 +4249,23 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"   Сумма: {query.total_amount} {query.currency}")
     
     try:
-        if not query.invoice_payload.startswith('natal_chart:'):
+        # Проверяем формат payload (поддерживаем оба формата: старый с двоеточием и новый)
+        if not (query.invoice_payload.startswith('natal_chart:') or query.invoice_payload.startswith('natal_chart_')):
             logger.warning(f"❌ Неверный payload: {query.invoice_payload}")
             log_event(user_id, 'payment_error', {'error': 'invalid_payload', 'payload': query.invoice_payload})
             await query.answer(ok=False, error_message='Некорректный платежный запрос')
+            return
+        
+        # Проверяем сумму платежа
+        expected_amount = NATAL_CHART_PRICE_MINOR  # В копейках
+        if query.total_amount != expected_amount:
+            logger.warning(f"❌ Неверная сумма платежа: ожидалось {expected_amount}, получено {query.total_amount}")
+            log_event(user_id, 'payment_error', {
+                'error': 'invalid_amount',
+                'expected': expected_amount,
+                'received': query.total_amount
+            })
+            await query.answer(ok=False, error_message='Неверная сумма платежа')
             return
         
         # Логируем предварительную проверку оплаты
