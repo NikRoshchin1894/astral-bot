@@ -2152,8 +2152,14 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     
     # Используем переменные окружения для URL или формируем по username
     # Приоритет: сначала проверяем переменные окружения, затем формируем по username
-    success_url_env = os.getenv('PAYMENT_SUCCESS_URL', '')
-    return_url_env = os.getenv('PAYMENT_RETURN_URL', '')
+    success_url_env = os.getenv('PAYMENT_SUCCESS_URL', '').strip()
+    return_url_env = os.getenv('PAYMENT_RETURN_URL', '').strip()
+    
+    # Обрабатываем случай, когда в переменной окружения может быть префикс (например, "PAYMENT_RETURN_URL=https://...")
+    if return_url_env.startswith('PAYMENT_RETURN_URL='):
+        return_url_env = return_url_env.replace('PAYMENT_RETURN_URL=', '', 1).strip()
+    if success_url_env.startswith('PAYMENT_SUCCESS_URL='):
+        success_url_env = success_url_env.replace('PAYMENT_SUCCESS_URL=', '', 1).strip()
     
     if success_url_env:
         success_url = success_url_env
