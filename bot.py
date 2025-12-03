@@ -1888,7 +1888,7 @@ async def generate_natal_chart_background(user_id: int, context: ContextTypes.DE
                 caption = "📄 Натальная карта в формате PDF"
                 pdf_sent_successfully = False
                 try:
-                with open(pdf_path, 'rb') as pdf_file:
+                    with open(pdf_path, 'rb') as pdf_file:
                     await context.bot.send_document(
                         chat_id=chat_id,
                         document=pdf_file,
