@@ -1,0 +1,69 @@
+# Виртуальное окружение
+venv/
+env/
+.venv/
+
+# Python кэш
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# База данных
+*.db
+*.sqlite
+*.sqlite3
+users.db
+
+# Логи
+*.log
+logs/
+bot*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git
+.git/
+.gitignore
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Тестовые файлы и скрипты
+test_*.py
+*_test.py
+*.sh
+analyze_*.py
+check_*.py
+cleanup_*.py
+find_*.py
+view_*.py
+migrate_*.py
+
+# Документация и примеры
+*.md
+DEPLOY*.md
+*.example
+*.toml
+*.json
+railway.json
+render.yaml
+Procfile
+
+# Временные файлы
+tmp/
+temp/
+*.tmp
+

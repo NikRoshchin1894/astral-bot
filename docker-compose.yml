@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  astral-bot:
+    build: .
+    container_name: astral-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Монтируем директорию с базой данных для сохранения данных
+      - ./data:/app/data
+      # Монтируем логи для просмотра
+      - ./logs:/app/logs
+    ports:
+      # Порт для webhook (если используется)
+      - "8080:8080"
+    environment:
+      - PYTHONUNBUFFERED=1
+    # Ограничения ресурсов (опционально)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+
