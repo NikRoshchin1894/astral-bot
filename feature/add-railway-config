@@ -1,0 +1,8 @@
+[service]
+name = "worker"
+protocol = "http"
+port = 8080
+
+[deploy]
+startCommand = "python3 bot.py"
+
