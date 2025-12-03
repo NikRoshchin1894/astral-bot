@@ -2222,6 +2222,7 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     logger.info(f"🔗 Return URL: {return_url}")
     
     # Подготовка данных для создания платежа
+    # Минимальный набор полей согласно документации ЮKassa API v3
     payment_data = {
         "amount": {
             "value": f"{amount_rub:.2f}",
@@ -2239,24 +2240,10 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
         }
     }
     
-    # Добавляем webhook URL если указан
-    if webhook_url:
-        payment_data["receipt"] = {
-            "customer": {
-                "full_name": f"User_{user_id}"
-            },
-            "items": [
-                {
-                    "description": description,
-                    "quantity": "1",
-                    "amount": {
-                        "value": f"{amount_rub:.2f}",
-                        "currency": "RUB"
-                    },
-                    "vat_code": 1
-                }
-            ]
-        }
+    # ВАЖНО: receipt - это фискальные данные, не связаны с webhook
+    # Receipt нужен только если требуется фискализация
+    # Webhook настраивается в личном кабинете или через отдельный механизм
+    # Убираем добавление receipt, так как он не обязателен для создания платежа
     
     # Авторизация через Basic Auth
     auth_string = f"{shop_id}:{secret_key}"
@@ -2302,13 +2289,14 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
         logger.info("✅ Прокси в окружении не обнаружено")
     
     try:
-        # Создаем платеж через API ЮKassa (timeout 30 секунд)
+        # Создаем платеж через API ЮKassa
+        # Используем tuple для timeout: (connect_timeout, read_timeout)
         logger.info(f"📤 Отправка POST запроса к ЮKassa API...")
         response = requests.post(
             payment_api_url,
             json=payment_data,
             headers=headers,
-            timeout=30  # 30 секунд на подключение + чтение ответа
+            timeout=(10, 30)  # 10 сек на подключение, 30 сек на чтение ответа
         )
         
         logger.info(f"📡 Ответ от ЮKassa: status={response.status_code}")
