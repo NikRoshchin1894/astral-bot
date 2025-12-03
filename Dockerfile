@@ -27,9 +27,8 @@ COPY . .
 RUN mkdir -p logs && \
     chmod 755 logs
 
-# Копируем шрифты (если они есть)
-COPY fonts/ fonts/ 2>/dev/null || true
-COPY images/ images/ 2>/dev/null || true
+# Создаем директории для шрифтов и изображений (если их нет)
+RUN mkdir -p fonts images || true
 
 # Устанавливаем переменные окружения по умолчанию
 ENV PYTHONUNBUFFERED=1
