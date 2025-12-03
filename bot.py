@@ -1312,7 +1312,7 @@ async def start_payment_process(query, context):
             log_event(user_id, 'payment_error', {'error': 'payment_link_creation_failed'})
             
             # Отправляем сообщение с ошибкой и кнопками для повторной попытки
-    try:
+            try:
                 await query.message.edit_text(
                     "❌ *Ошибка создания ссылки на оплату*\n\n"
                     "Не удалось создать ссылку для оплаты.\n\n"
@@ -1344,7 +1344,7 @@ async def start_payment_process(query, context):
                     )
                 except Exception as send_error:
                     logger.error(f"Критическая ошибка: не удалось отправить сообщение об ошибке: {send_error}")
-        return
+            return
 
         logger.info(f"✅ Ссылка на оплату создана для пользователя {user_id}")
         
@@ -1368,14 +1368,14 @@ async def start_payment_process(query, context):
         except Exception as edit_error:
             # Если не удалось отредактировать, отправляем новое сообщение
             logger.warning(f"Не удалось отредактировать сообщение: {edit_error}, отправляем новое")
-    await query.message.reply_text(
+            await query.message.reply_text(
                 f"*Оплата натальной карты*\n\n"
                 f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
                 f"Нажмите кнопку ниже, чтобы перейти на страницу оплаты.\n\n"
                 f"*После оплаты сразу приступлю к подготовке отчета!*✨",
                 reply_markup=payment_keyboard,
                 parse_mode='Markdown'
-    )
+            )
         
     except Exception as payment_error:
         logger.error(f"❌ Ошибка при создании ссылки на оплату: {payment_error}", exc_info=True)
