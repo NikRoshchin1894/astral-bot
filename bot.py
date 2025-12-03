@@ -2290,13 +2290,13 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     
     try:
         # Создаем платеж через API ЮKassa
-        # Используем tuple для timeout: (connect_timeout, read_timeout)
-        logger.info(f"📤 Отправка POST запроса к ЮKassa API...")
+        # Увеличен timeout для чтения до 60 секунд из-за медленного ответа API ЮKassa
+        logger.info(f"📤 Отправка POST запроса к ЮKassa API (timeout: 10s connect, 60s read)...")
         response = requests.post(
             payment_api_url,
             json=payment_data,
             headers=headers,
-            timeout=(10, 30)  # 10 сек на подключение, 30 сек на чтение ответа
+            timeout=(10, 60)  # 10 сек на подключение, 60 сек на чтение ответа
         )
         
         logger.info(f"📡 Ответ от ЮKassa: status={response.status_code}")
@@ -2352,8 +2352,12 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     except requests.exceptions.ReadTimeout:
         logger.error("=" * 60)
         logger.error(f"❌ ReadTimeout от api.yookassa.ru для пользователя {user_id}")
-        logger.error(f"   Соединение установлено, но ответ не получен в течение 30 секунд")
-        logger.error(f"   Возможно, API ЮKassa перегружен или медленно отвечает")
+        logger.error(f"   Соединение установлено, но ответ не получен в течение 60 секунд")
+        logger.error(f"   Это указывает на серьезную проблему с API ЮKassa")
+        logger.error(f"   Возможные причины:")
+        logger.error(f"   • API ЮKassa перегружен или недоступен")
+        logger.error(f"   • Проблемы с сетью Railway → ЮKassa")
+        logger.error(f"   • Неверный формат запроса (хотя соединение установлено)")
         logger.error("=" * 60)
         return None
     except requests.exceptions.Timeout as timeout_error:
