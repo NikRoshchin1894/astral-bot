@@ -17,7 +17,7 @@ import threading
 from datetime import datetime
 from typing import Optional, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
-from telegram.error import Conflict
+from telegram.error import Conflict, BadRequest
 from telegram.ext import (
     Application,
     CommandHandler,
