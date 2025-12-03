@@ -105,11 +105,12 @@ try:
     print("📡 Отправка POST запроса...")
     print()
     
+    # Используем tuple для timeout: (connect_timeout, read_timeout)
     response = requests.post(
         url,
         json=payment_data,
         headers=headers,
-        timeout=60  # Увеличен timeout для диагностики
+        timeout=(10, 30)  # 10 секунд на подключение, 30 секунд на чтение
     )
     
     end_time = datetime.now()
