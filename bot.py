@@ -2204,6 +2204,11 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     # Минимальный набор полей согласно документации ЮKassa API v3
     # https://yookassa.ru/developers/payment-acceptance/getting-started/quick-start
     
+    # ВАЖНО: НЕ указываем payment_method_data, чтобы показать ВСЕ доступные способы оплаты
+    # Если указать payment_method_data с конкретным типом (bank_card, sbp и т.д.),
+    # ЮKassa покажет только этот метод + привязанные дефолтные
+    # Без payment_method_data - показываются все способы оплаты, включенные в настройках магазина
+    
     # Форматируем amount.value как строку с двумя знаками после запятой (требование API)
     amount_value_str = f"{amount_rub:.2f}"
     
@@ -2227,6 +2232,7 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
             "user_id": str(user_id),
             "payment_type": "natal_chart"
         }
+        # ВАЖНО: payment_method_data НЕ указываем - это позволяет показать все способы оплаты
     }
     
     # Проверяем длину description (максимум 128 символов по документации)
