@@ -5109,73 +5109,90 @@ def main():
                     except Exception as e:
                         logger.warning(f"⚠️  Ошибка при закрытии loop: {e}")
         
-        # Запускаем постоянный поток обработки обновлений
-        def update_processor_thread():
-            """Постоянный поток для обработки обновлений из очереди"""
-            # Создаем новый event loop для этого потока
+        # Запускаем Application в отдельном потоке для обработки обновлений
+        def application_runner_thread():
+            """Запускает Application в отдельном потоке с его собственным event loop"""
             loop = None
-            task = None
             try:
+                logger.info("🚀 Запуск Application в фоновом потоке...")
+                
+                # Создаем новый event loop для этого потока
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 
-                # Инициализируем Application в этом потоке
-                try:
-                    logger.info("🔧 Инициализация Application в потоке обработки...")
-                    loop.run_until_complete(application.initialize())
-                    logger.info("✅ Application инициализирован в потоке обработки")
-                except Exception as e:
-                    logger.error(f"❌ Ошибка при инициализации Application: {e}", exc_info=True)
-                    return
+                async def run_application():
+                    """Инициализирует Application и обрабатывает обновления"""
+                    try:
+                        # Инициализируем Application
+                        logger.info("🔧 Инициализация Application...")
+                        await application.initialize()
+                        logger.info("✅ Application инициализирован")
+                        
+                        # Запускаем обработку обновлений из нашей очереди
+                        async def process_updates():
+                            """Обрабатывает обновления из очереди и добавляет их в Application"""
+                            while True:
+                                try:
+                                    # Получаем обновление из нашей очереди
+                                    try:
+                                        update_data = update_queue_for_processing.get_nowait()
+                                        
+                # Создаем объект Update
+                update = Update.de_json(update_data, application.bot)
+                if update:
+                    # Добавляем обновление в очередь Application напрямую
+                    try:
+                        application.update_queue.put_nowait(update)
+                        logger.debug(f"📨 Обновление добавлено в Application: update_id={update.update_id}")
+                    except Exception as queue_error:
+                        logger.error(f"❌ Ошибка при добавлении в очередь Application: {queue_error}")
                 
-                # Обрабатываем обновления из очереди
-                async def process_updates():
-                    """Асинхронная функция для обработки обновлений"""
-                    while True:
-                        try:
-                            # Получаем обновление из очереди (используем get_nowait для неблокирующей проверки)
-                            try:
-                                update_data = update_queue_for_processing.get_nowait()
-                                
-                                # Обрабатываем обновление
-                                update = Update.de_json(update_data, application.bot)
-                                if update:
-                                    await application.process_update(update)
-                                    logger.debug(f"📨 Обновление обработано: update_id={update.update_id}")
-                                
-                                # Помечаем задачу как выполненную
-                                update_queue_for_processing.task_done()
-                                
-                            except queue.Empty:
-                                # Нет обновлений, ждем немного
-                                await asyncio.sleep(0.1)
-                                continue
-                            
-                        except Exception as e:
-                            logger.error(f"❌ Критическая ошибка в обработчике обновлений: {e}", exc_info=True)
-                            await asyncio.sleep(1)
+                update_queue_for_processing.task_done()
+                                        
+                                    except queue.Empty:
+                                        # Нет обновлений, ждем немного
+                                        await asyncio.sleep(0.1)
+                                        continue
+                                    
+                                except Exception as e:
+                                    logger.error(f"❌ Ошибка при обработке обновления: {e}", exc_info=True)
+                                    await asyncio.sleep(1)
+                        
+                        # Запускаем обработку обновлений в фоне
+                        task = loop.create_task(process_updates())
+                        
+                        # Запускаем event loop для обработки обновлений
+                        await asyncio.sleep(0)  # Даем задаче начаться
+                        
+                        # Держим event loop живым
+                        await task
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при запуске Application: {e}", exc_info=True)
+                        raise
                 
-                # Запускаем обработку обновлений как фоновую задачу
-                task = loop.create_task(process_updates())
+                # Запускаем Application и обработку обновлений
+                loop.run_until_complete(run_application())
+                # Запускаем event loop навсегда
                 loop.run_forever()
-            except KeyboardInterrupt:
-                logger.info("🛑 Обработчик обновлений остановлен")
-                if task:
-                    task.cancel()
+                
             except Exception as e:
-                logger.error(f"❌ Критическая ошибка в потоке обработки обновлений: {e}", exc_info=True)
+                logger.error(f"❌ Критическая ошибка в потоке Application: {e}", exc_info=True)
             finally:
-                # Закрываем loop в любом случае, если он был создан
                 if loop is not None:
                     try:
+                        # Останавливаем Application
+                        if not loop.is_closed():
+                            loop.run_until_complete(application.stop())
+                            loop.run_until_complete(application.shutdown())
                         loop.close()
                     except Exception as e:
                         logger.warning(f"⚠️  Ошибка при закрытии loop: {e}")
         
-        # Запускаем поток обработки
-        processor_thread = threading.Thread(target=update_processor_thread, daemon=True)
-        processor_thread.start()
-        logger.info("✅ Поток обработки обновлений запущен")
+        # Запускаем Application в отдельном потоке
+        app_thread = threading.Thread(target=application_runner_thread, daemon=True)
+        app_thread.start()
+        logger.info("✅ Поток Application запущен")
         
         logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
         logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
