@@ -2666,14 +2666,34 @@ def update_payment_status(yookassa_payment_id: str, status: str, payment_data: d
         conn.close()
 
 
-async def check_and_process_pending_payment(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+class ApplicationContextWrapper:
+    """Обертка для Application, имитирующая Context для использования в check_and_process_pending_payment"""
+    def __init__(self, application: Application, user_id: int):
+        self.bot = application.bot
+        self.application = application
+        self.user_id = user_id
+        # Загружаем user_data из базы данных
+        self.user_data = load_user_profile(user_id) or {}
+
+
+async def check_and_process_pending_payment(user_id: int, context_or_application) -> bool:
     """
     Проверяет и обрабатывает ожидающие платежи для пользователя
     Также проверяет succeeded платежи, которые еще не были обработаны
     
+    Args:
+        user_id: ID пользователя
+        context_or_application: ContextTypes.DEFAULT_TYPE или Application объект
+    
     Returns:
         bool: True если платеж был найден и обработан, False иначе
     """
+    # Если передан Application, создаем wrapper
+    if isinstance(context_or_application, Application):
+        context = ApplicationContextWrapper(context_or_application, user_id)
+    else:
+        context = context_or_application
+    
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
@@ -4885,6 +4905,7 @@ async def process_payment_async(user_id: int, application):
     """Асинхронная обработка успешного платежа"""
     try:
         # Проверяем и обрабатываем платеж
+        # Передаем Application - функция сама создаст wrapper
         await check_and_process_pending_payment(user_id, application)
     except Exception as e:
         logger.error(f"❌ Ошибка при асинхронной обработке платежа: {e}", exc_info=True)
