@@ -4775,7 +4775,8 @@ def create_webhook_app(application_instance):
                 # Добавляем обновление в очередь для обработки
                 try:
                     update_queue_for_processing.put_nowait(update_data)
-                    logger.debug("📨 Обновление добавлено в очередь для обработки")
+                    update_type = update_data.get('callback_query') and 'callback_query' or update_data.get('message') and 'message' or 'unknown'
+                    logger.info(f"📨 Обновление получено от Telegram: type={update_type}, добавлено в очередь")
                     return jsonify({'status': 'ok'}), 200
                 except Exception as e:
                     logger.error(f"❌ Ошибка при добавлении обновления в очередь: {e}", exc_info=True)
@@ -5160,12 +5161,14 @@ def main():
                                         # Создаем объект Update
                                         update = Update.de_json(update_data, application.bot)
                                         if update:
-                                            # Добавляем обновление в очередь Application
+                                            # Обрабатываем обновление напрямую через Application
                                             try:
-                                                application.update_queue.put_nowait(update)
-                                                logger.debug(f"📨 Обновление добавлено в Application: update_id={update.update_id}")
-                                            except Exception as queue_error:
-                                                logger.error(f"❌ Ошибка при добавлении в очередь: {queue_error}")
+                                                update_type = "callback_query" if update.callback_query else "message" if update.message else "unknown"
+                                                logger.info(f"📨 Обработка обновления: update_id={update.update_id}, type={update_type}")
+                                                await application.process_update(update)
+                                                logger.info(f"✅ Обновление успешно обработано: update_id={update.update_id}")
+                                            except Exception as process_error:
+                                                logger.error(f"❌ Ошибка при обработке обновления: {process_error}", exc_info=True)
                                         
                                         update_queue_for_processing.task_done()
                                         
