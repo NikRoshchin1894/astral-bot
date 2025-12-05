@@ -777,13 +777,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 payment_status = payment_info[1]
                 
                 # Проверяем статус платежа через API, если он еще pending или canceled
-                if payment_status == 'pending' or payment_status == 'canceled':
+                # ВАЖНО: Также проверяем, если start_param = 'payment_cancel', но платеж может быть успешен
+                if payment_status in ['pending', 'canceled']:
                     try:
                         payment_info_api = await check_yookassa_payment_status(payment_id)
                         if payment_info_api:
                             payment_status = payment_info_api.get('status', payment_status)
+                            
+                            # ВАЖНО: Если платеж успешен, обрабатываем его как успешный!
+                            if payment_status == 'succeeded':
+                                logger.info(f"✅ Платеж {payment_id} успешен при проверке через API после payment_cancel")
+                                # Обновляем статус в базе
+                                update_payment_status(payment_id, 'succeeded', payment_info_api)
+                                # Помечаем пользователя как оплатившего
+                                mark_user_paid(user_id)
+                                # Обрабатываем платеж как успешный
+                                payment_processed = await check_and_process_pending_payment(user_id, context)
+                                if payment_processed:
+                                    # Платеж обработан успешно, не показываем сообщение об отмене
+                                    return
+                                else:
+                                    # Платеж успешен, но что-то пошло не так с обработкой
+                                    await update.message.reply_text(
+                                        "✅ *Оплата получена!*\n\n"
+                                        "Обрабатываю платеж... Пожалуйста, подождите немного. "
+                                        "Если натальная карта не начнет генерироваться автоматически, нажмите кнопку ниже.",
+                                        reply_markup=InlineKeyboardMarkup([[
+                                            InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                                        ]]),
+                                        parse_mode='Markdown'
+                                    )
+                                    return
+                            
                             # Если платеж был отменен, получаем причину
-                            if payment_status == 'canceled':
+                            elif payment_status == 'canceled':
                                 cancellation_details = payment_info_api.get('cancellation_details', {})
                                 cancel_reason = cancellation_details.get('reason', '')
                                 
@@ -825,6 +853,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 elif payment_status == 'canceled':
                     # Платеж уже помечен как canceled в базе
                     cancel_message += "*Примечание:* Платеж был отменен ранее.\n\n"
+                elif payment_status == 'succeeded':
+                    # Платеж уже успешен в базе - обрабатываем его
+                    logger.info(f"✅ Платеж {payment_id} уже успешен в базе, обрабатываем его")
+                    payment_processed = await check_and_process_pending_payment(user_id, context)
+                    if payment_processed:
+                        # Платеж обработан успешно, не показываем сообщение об отмене
+                        return
         except Exception as e:
             logger.warning(f"Ошибка при получении информации о платеже: {e}")
         finally:
