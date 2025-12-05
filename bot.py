@@ -573,28 +573,45 @@ def user_has_paid(user_id: int) -> bool:
 
 
 def mark_user_paid(user_id: int):
+    """Помечает пользователя как оплатившего"""
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
-    now = datetime.now().isoformat()
     
-    if db_type == 'postgresql':
-        cursor.execute('''
-            INSERT INTO users (user_id, has_paid, updated_at)
-            VALUES (%s, 1, %s)
-            ON CONFLICT(user_id) DO UPDATE SET
-                has_paid = 1,
-                updated_at = EXCLUDED.updated_at
-        ''', (user_id, now))
-    else:
-        cursor.execute('''
-            INSERT INTO users (user_id, has_paid, updated_at)
-            VALUES (?, 1, ?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                has_paid = 1,
-                updated_at = excluded.updated_at
-        ''', (user_id, now))
-    conn.commit()
-    conn.close()
+    try:
+        if db_type == 'postgresql':
+            # Используем CURRENT_TIMESTAMP для PostgreSQL
+            cursor.execute('''
+                UPDATE users
+                SET has_paid = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = %s
+            ''', (user_id,))
+            # Если пользователя нет, создаем запись
+            if cursor.rowcount == 0:
+                cursor.execute('''
+                    INSERT INTO users (user_id, has_paid, updated_at)
+                    VALUES (%s, 1, CURRENT_TIMESTAMP)
+                ''', (user_id,))
+        else:
+            now = datetime.now().isoformat()
+            cursor.execute('''
+                UPDATE users
+                SET has_paid = 1, updated_at = ?
+                WHERE user_id = ?
+            ''', (now, user_id))
+            # Если пользователя нет, создаем запись
+            if cursor.rowcount == 0:
+                cursor.execute('''
+                    INSERT INTO users (user_id, has_paid, updated_at)
+                    VALUES (?, 1, ?)
+                ''', (user_id, now))
+        
+        conn.commit()
+        logger.info(f"✅ Пользователь {user_id} помечен как оплативший")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при пометке пользователя как оплатившего: {e}", exc_info=True)
+        conn.rollback()
+    finally:
+        conn.close()
 
 
 def save_user_username(user_id: int, username: Optional[str], first_name: Optional[str]):
@@ -727,15 +744,93 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     
     elif start_param == 'payment_cancel':
+        # Проверяем, есть ли информация о последнем платеже пользователя
+        conn, db_type = get_db_connection()
+        cursor = conn.cursor()
+        
+        cancel_message = "❌ *Оплата отменена*\n\n"
+        
+        try:
+            # Пытаемся получить информацию о последнем платеже
+            if db_type == 'postgresql':
+                cursor.execute('''
+                    SELECT yookassa_payment_id, status, created_at
+                    FROM payments
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (user_id,))
+            else:
+                cursor.execute('''
+                    SELECT yookassa_payment_id, status, created_at
+                    FROM payments
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (user_id,))
+            
+            payment_info = cursor.fetchone()
+            
+            if payment_info:
+                payment_id = payment_info[0]
+                payment_status = payment_info[1]
+                
+                # Проверяем статус платежа через API, если он еще pending
+                if payment_status == 'pending':
+                    try:
+                        payment_info_api = await check_yookassa_payment_status(payment_id)
+                        if payment_info_api:
+                            payment_status = payment_info_api.get('status', payment_status)
+                            # Если платеж был отменен, получаем причину
+                            if payment_status == 'canceled':
+                                cancellation_details = payment_info_api.get('cancellation_details', {})
+                                cancel_reason = cancellation_details.get('reason', '')
+                                
+                                # Добавляем информацию о причине отмены
+                                reason_messages = {
+                                    '3d_secure_failed': 'Ошибка 3D Secure аутентификации',
+                                    'call_issuer': 'Банк отклонил платеж. Обратитесь в банк для уточнения причины.',
+                                    'canceled_by_merchant': 'Платеж отменен магазином',
+                                    'expired_on_confirmation': 'Время на оплату истекло',
+                                    'expired_on_capture': 'Время на подтверждение платежа истекло',
+                                    'fraud_suspected': 'Платеж отклонен из-за подозрения в мошенничестве',
+                                    'insufficient_funds': 'Недостаточно средств на карте',
+                                    'invalid_csc': 'Неверный CVV/CVC код',
+                                    'invalid_card_number': 'Неверный номер карты',
+                                    'invalid_cardholder_name': 'Неверное имя держателя карты',
+                                    'issuer_unavailable': 'Банк-эмитент недоступен. Попробуйте позже.',
+                                    'payment_method_limit_exceeded': 'Превышен лимит по способу оплаты',
+                                    'payment_method_restricted': 'Способ оплаты недоступен',
+                                    'permission_revoked': 'Разрешение на платеж отозвано',
+                                    'unsupported_mobile_operator': 'Мобильный оператор не поддерживается'
+                                }
+                                
+                                if cancel_reason and cancel_reason in reason_messages:
+                                    cancel_message += f"*Причина:* {reason_messages[cancel_reason]}\n\n"
+                    except Exception as e:
+                        logger.warning(f"Не удалось проверить статус платежа: {e}")
+        except Exception as e:
+            logger.warning(f"Ошибка при получении информации о платеже: {e}")
+        finally:
+            conn.close()
+        
+        cancel_message += "Вы можете попробовать оплатить позже или обратиться в поддержку, если проблема повторяется."
+        
         await update.message.reply_text(
-            "❌ *Оплата отменена*\n\n"
-            "Вы можете попробовать оплатить позже.",
+            cancel_message,
             reply_markup=InlineKeyboardMarkup([[
                 InlineKeyboardButton("💳 Попробовать оплатить снова", callback_data='buy_natal_chart'),
+                InlineKeyboardButton("💬 Поддержка", callback_data='support'),
                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
             ]]),
             parse_mode='Markdown'
         )
+        
+        # Логируем событие отмены
+        log_event(user_id, 'payment_cancel_return', {
+            'start_param': start_param
+        })
+        
         return
     
     # Логируем событие старта
@@ -2541,6 +2636,7 @@ def update_payment_status(yookassa_payment_id: str, status: str, payment_data: d
 async def check_and_process_pending_payment(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
     Проверяет и обрабатывает ожидающие платежи для пользователя
+    Также проверяет succeeded платежи, которые еще не были обработаны
     
     Returns:
         bool: True если платеж был найден и обработан, False иначе
@@ -2549,7 +2645,7 @@ async def check_and_process_pending_payment(user_id: int, context: ContextTypes.
     cursor = conn.cursor()
     
     try:
-        # Ищем последний ожидающий платеж пользователя
+        # Сначала ищем последний ожидающий платеж пользователя
         if db_type == 'postgresql':
             cursor.execute('''
                 SELECT yookassa_payment_id, amount, created_at
@@ -2568,6 +2664,86 @@ async def check_and_process_pending_payment(user_id: int, context: ContextTypes.
             ''', (user_id,))
         
         payment = cursor.fetchone()
+        
+        # Если нет pending платежей, проверяем succeeded платежи, которые еще не обработаны
+        if not payment:
+            # Ищем succeeded платежи, для которых нет события payment_success
+            if db_type == 'postgresql':
+                cursor.execute('''
+                    SELECT p.yookassa_payment_id, p.amount, p.created_at
+                    FROM payments p
+                    WHERE p.user_id = %s 
+                    AND p.status = 'succeeded'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM events e
+                        WHERE e.user_id = %s
+                        AND e.event_type = 'payment_success'
+                        AND e.event_data::text LIKE '%%' || p.yookassa_payment_id || '%%'
+                    )
+                    ORDER BY p.created_at DESC
+                    LIMIT 1
+                ''', (user_id, user_id))
+            else:
+                cursor.execute('''
+                    SELECT p.yookassa_payment_id, p.amount, p.created_at
+                    FROM payments p
+                    WHERE p.user_id = ?
+                    AND p.status = 'succeeded'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM events e
+                        WHERE e.user_id = ?
+                        AND e.event_type = 'payment_success'
+                        AND e.event_data LIKE '%' || p.yookassa_payment_id || '%'
+                    )
+                    ORDER BY p.created_at DESC
+                    LIMIT 1
+                ''', (user_id, user_id))
+            
+            payment = cursor.fetchone()
+            
+            # Если нашли succeeded платеж, обрабатываем его напрямую
+            if payment:
+                yookassa_payment_id = payment[0]
+                amount = payment[1]
+                
+                logger.info(f"🔍 Найден необработанный succeeded платеж {yookassa_payment_id} для пользователя {user_id}")
+                
+                # Помечаем пользователя как оплатившего
+                mark_user_paid(user_id)
+                
+                # Логируем успешную оплату
+                log_event(user_id, 'payment_success', {
+                    'yookassa_payment_id': yookassa_payment_id,
+                    'amount': amount,
+                    'source': 'auto_processing_succeeded'
+                })
+                
+                # Запускаем генерацию натальной карты
+                user_data = context.user_data
+                if not user_data.get('birth_name'):
+                    loaded_data = load_user_profile(user_id)
+                    if loaded_data:
+                        user_data.update(loaded_data)
+                
+                has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+                
+                if has_profile:
+                    await handle_natal_chart_request_from_payment(user_id, context)
+                else:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="✅ *Оплата получена!*\n\n"
+                             "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
+                             "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]]),
+                        parse_mode='Markdown'
+                    )
+                
+                conn.close()
+                return True
         
         if not payment:
             return False
@@ -4531,8 +4707,37 @@ telegram_application = None
 
 
 def create_webhook_app(application_instance):
-    """Создает Flask приложение для webhook ЮKassa"""
+    """Создает Flask приложение для webhook Telegram и ЮKassa"""
     app = Flask(__name__)
+    
+    # Webhook для Telegram
+    @app.route('/webhook/telegram', methods=['POST'])
+    def telegram_webhook():
+        """Webhook endpoint для получения обновлений от Telegram"""
+        try:
+            update_data = request.get_json()
+            if update_data:
+                # Обрабатываем обновление асинхронно
+                def process_update():
+                    try:
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        update = Update.de_json(update_data, application_instance.bot)
+                        loop.run_until_complete(application_instance.process_update(update))
+                        loop.close()
+                    except Exception as e:
+                        logger.error(f"❌ Ошибка при обработке обновления от Telegram: {e}", exc_info=True)
+                
+                # Запускаем обработку в отдельном потоке
+                update_thread = threading.Thread(target=process_update, daemon=True)
+                update_thread.start()
+                
+                return jsonify({'status': 'ok'}), 200
+            else:
+                return jsonify({'status': 'error', 'message': 'Empty request'}), 400
+        except Exception as e:
+            logger.error(f"❌ Ошибка при обработке webhook от Telegram: {e}", exc_info=True)
+            return jsonify({'status': 'error', 'message': str(e)}), 500
     
     @app.route('/webhook/yookassa', methods=['POST'])
     def yookassa_webhook():
@@ -4598,8 +4803,28 @@ def create_webhook_app(application_instance):
             elif event_type == 'payment.canceled':
                 yookassa_payment_id = payment_object.get('id')
                 payment_status = payment_object.get('status')
-                update_payment_status(yookassa_payment_id, payment_status, payment_object)
+                
+                # Извлекаем причину отмены, если она есть
+                cancellation_details = payment_object.get('cancellation_details', {})
+                cancel_reason = cancellation_details.get('reason', 'unknown')
+                cancel_party = cancellation_details.get('party', 'unknown')
+                
+                # Логируем детальную информацию об отмене
                 logger.info(f"ℹ️ Платеж {yookassa_payment_id} отменен")
+                logger.info(f"   Причина: {cancel_reason}, Инициатор: {cancel_party}")
+                
+                # Сохраняем причину отмены в логах событий, если есть user_id
+                metadata = payment_object.get('metadata', {})
+                user_id = metadata.get('user_id')
+                if user_id:
+                    log_event(int(user_id), 'payment_canceled', {
+                        'yookassa_payment_id': yookassa_payment_id,
+                        'cancel_reason': cancel_reason,
+                        'cancel_party': cancel_party,
+                        'source': 'webhook'
+                    })
+                
+                update_payment_status(yookassa_payment_id, payment_status, payment_object)
             
             return jsonify({'status': 'ok'}), 200
             
@@ -4662,7 +4887,12 @@ async def check_pending_payments_periodically(application):
                 if pending_payments:
                     logger.info(f"🔍 Найдено {len(pending_payments)} ожидающих платежей для проверки")
                     
-                    for user_id, yookassa_payment_id in pending_payments:
+                    for payment_row in pending_payments:
+                        # Извлекаем значения в зависимости от количества колонок
+                        # PostgreSQL возвращает: (user_id, yookassa_payment_id, created_at)
+                        # SQLite возвращает: (user_id, yookassa_payment_id)
+                        user_id = payment_row[0]
+                        yookassa_payment_id = payment_row[1]
                         try:
                             # Проверяем статус платежа через API
                             payment_info = await check_yookassa_payment_status(yookassa_payment_id)
@@ -4699,27 +4929,42 @@ async def check_pending_payments_periodically(application):
 
 
 def start_webhook_server(application_instance):
-    """Запускает Flask сервер для webhook в отдельном потоке"""
-    webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')
+    """Запускает Flask сервер для webhook Telegram и YooKassa в отдельном потоке"""
+    telegram_webhook_url = os.getenv('TELEGRAM_WEBHOOK_URL', '')
+    yookassa_webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')
     
-    if not webhook_url:
-        logger.warning("⚠️ YOOKASSA_WEBHOOK_URL не установлен. Webhook не будет запущен.")
-        logger.info("💡 Webhook не обязателен - платежи будут проверяться периодически.")
+    # Определяем, нужен ли webhook сервер
+    need_telegram_webhook = bool(telegram_webhook_url)
+    need_yookassa_webhook = bool(yookassa_webhook_url)
+    
+    if not need_telegram_webhook and not need_yookassa_webhook:
+        logger.warning("⚠️ TELEGRAM_WEBHOOK_URL и YOOKASSA_WEBHOOK_URL не установлены.")
+        logger.info("💡 Webhook не будет запущен. Бот будет использовать polling.")
         return None
     
     try:
-        # Извлекаем хост и порт из URL (если указан)
-        from urllib.parse import urlparse
-        parsed = urlparse(webhook_url)
-        host = parsed.hostname or '0.0.0.0'
-        # Порт определяем из переменной окружения или используем дефолтный
-        port = int(os.getenv('WEBHOOK_PORT', '8080'))
+        # Определяем порт и хост
+        # Приоритет: PORT (для платформ типа Railway/Render) > WEBHOOK_PORT > 8080
+        port = int(os.getenv('PORT') or os.getenv('WEBHOOK_PORT', '8080'))
+        host = '0.0.0.0'  # Слушаем на всех интерфейсах - это позволяет принимать запросы извне
+        
+        # Если есть TELEGRAM_WEBHOOK_URL, пытаемся извлечь порт из него
+        if telegram_webhook_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(telegram_webhook_url)
+            if parsed.port:
+                # Порт указан в URL - это может быть для прокси, но мы все равно слушаем на своем порту
+                pass  # Используем порт из переменной окружения
         
         app = create_webhook_app(application_instance)
         
         def run_flask():
             try:
                 logger.info(f"🌐 Запуск webhook сервера на {host}:{port}")
+                if need_telegram_webhook:
+                    logger.info(f"   📱 Telegram webhook: /webhook/telegram")
+                if need_yookassa_webhook:
+                    logger.info(f"   💳 YooKassa webhook: /webhook/yookassa")
                 app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
             except Exception as e:
                 logger.error(f"❌ Ошибка в Flask сервере: {e}", exc_info=True)
@@ -4731,7 +4976,11 @@ def start_webhook_server(application_instance):
         return webhook_thread
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске webhook сервера: {e}", exc_info=True)
-        logger.warning("⚠️ Бот продолжит работу без webhook. Платежи будут проверяться периодически.")
+        if need_telegram_webhook:
+            logger.error("❌ КРИТИЧНО: Не удалось запустить webhook сервер для Telegram!")
+            logger.error("   Бот не сможет получать обновления от Telegram!")
+        else:
+            logger.warning("⚠️ Бот продолжит работу без webhook. Платежи будут проверяться периодически.")
         return None
 
 
@@ -4760,66 +5009,175 @@ def main():
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     
-    # Запускаем webhook сервер в отдельном потоке (если настроен)
-    start_webhook_server(application)
+    # Проверяем, какой режим использовать: webhook или polling
+    telegram_webhook_url = os.getenv('TELEGRAM_WEBHOOK_URL', '')
     
-    # Задержка перед запуском для предотвращения конфликтов при одновременном старте нескольких инстансов
-    time.sleep(2)
-    
-    logger.info("Бот запущен!")
-    
-    # Попытки запуска с обработкой ошибки Conflict
-    max_retries = 3
-    retry_delay = 5
-    
-    for attempt in range(max_retries):
-        try:
-            # Удаляем webhook перед polling (асинхронно через run_polling)
-            logger.info(f"Попытка запуска {attempt + 1}/{max_retries}...")
-            
-            # Запускаем периодическую проверку платежей в отдельном потоке
-            def start_payment_checker_background():
-                """Запускает проверку платежей в отдельном потоке с собственным event loop"""
-                time.sleep(5)  # Небольшая задержка для инициализации бота
+    if telegram_webhook_url:
+        # Режим WEBHOOK
+        logger.info("🌐 Запуск бота в режиме WEBHOOK")
+        
+        # Запускаем webhook сервер (для Telegram и YooKassa)
+        webhook_thread = start_webhook_server(application)
+        
+        if not webhook_thread:
+            logger.error("❌ Не удалось запустить webhook сервер. Проверьте настройки.")
+            return
+        
+        # Задержка для запуска сервера
+        time.sleep(3)
+        
+        # Устанавливаем webhook в Telegram
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
+                logger.info(f"   URL: {telegram_webhook_url}")
+                
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(check_pending_payments_periodically(application))
-                except Exception as e:
-                    logger.error(f"❌ Критическая ошибка в потоке проверки платежей: {e}", exc_info=True)
-            
-            payment_checker_thread = threading.Thread(target=start_payment_checker_background, daemon=True)
-            payment_checker_thread.start()
-            logger.info("✅ Запущена фоновая проверка платежей")
-            
-            # run_polling автоматически удаляет webhook и использует drop_pending_updates
-            application.run_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True,  # Пропускаем старые обновления
-                close_loop=False
-            )
-            # Если дошли сюда, значит бот остановлен нормально
-            break
-            
-        except Conflict as e:
-            logger.error(f"Конфликт обнаружен: {e}")
-            if attempt < max_retries - 1:
-                wait_time = retry_delay * (attempt + 1)
-                logger.warning(f"Ожидание {wait_time} секунд перед повторной попыткой...")
-                time.sleep(wait_time)
-                logger.info("Повторная попытка запуска...")
-            else:
-                logger.error("Достигнуто максимальное количество попыток. Возможно, другой инстанс бота уже запущен.")
-                logger.error("Убедитесь, что запущен только один экземпляр бота на платформе.")
-                sys.exit(1)
                 
+                # Устанавливаем webhook
+                result = loop.run_until_complete(
+                    application.bot.set_webhook(
+                        url=telegram_webhook_url,
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True
+                    )
+                )
+                loop.close()
+                
+                if result:
+                    logger.info("✅ Webhook успешно установлен в Telegram")
+                    break
+                else:
+                    logger.warning(f"⚠️  Webhook не установлен (попытка {attempt + 1})")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                    
+            except Conflict as e:
+                logger.error(f"❌ Конфликт при установке webhook: {e}")
+                logger.error("   Возможно, webhook уже установлен другим экземпляром бота")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("   Продолжаем работу - возможно webhook уже установлен")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("   Бот продолжит работу, но webhook может быть не установлен")
+        
+        # Запускаем периодическую проверку платежей в отдельном потоке
+        def start_payment_checker_background():
+            """Запускает проверку платежей в отдельном потоке с собственным event loop"""
+            time.sleep(5)  # Небольшая задержка для инициализации бота
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(check_pending_payments_periodically(application))
+            except Exception as e:
+                logger.error(f"❌ Критическая ошибка в потоке проверки платежей: {e}", exc_info=True)
+        
+        payment_checker_thread = threading.Thread(target=start_payment_checker_background, daemon=True)
+        payment_checker_thread.start()
+        logger.info("✅ Запущена фоновая проверка платежей")
+        
+        logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
+        logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
+        
+        # Держим основной поток живым
+        try:
+            while True:
+                time.sleep(60)  # Проверяем каждую минуту
+                # Можно добавить health check или другую периодическую логику
         except KeyboardInterrupt:
             logger.info("Бот остановлен пользователем")
-            break
-            
-        except Exception as e:
-            logger.error(f"Критическая ошибка при запуске бота: {e}")
-            raise
+            # Удаляем webhook при остановке
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(application.bot.delete_webhook())
+                loop.close()
+                logger.info("✅ Webhook удален из Telegram")
+            except Exception as e:
+                logger.warning(f"⚠️  Не удалось удалить webhook: {e}")
+    
+    else:
+        # Режим POLLING (fallback)
+        logger.info("🔄 Запуск бота в режиме POLLING (TELEGRAM_WEBHOOK_URL не установлен)")
+        
+        # Запускаем webhook сервер для YooKassa (если настроен)
+        start_webhook_server(application)
+        
+        # Задержка перед запуском
+        time.sleep(2)
+        
+        logger.info("Бот запущен!")
+        
+        # Попытки запуска с обработкой ошибки Conflict
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Попытка запуска {attempt + 1}/{max_retries}...")
+                logger.info("🗑️  Удаление webhook перед запуском polling...")
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+                    loop.close()
+                    logger.info("✅ Webhook удален успешно")
+                except Exception as webhook_error:
+                    logger.warning(f"⚠️  Не удалось удалить webhook (возможно, он не был установлен): {webhook_error}")
+                
+                # Запускаем периодическую проверку платежей в отдельном потоке
+                def start_payment_checker_background():
+                    """Запускает проверку платежей в отдельном потоке с собственным event loop"""
+                    time.sleep(5)
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(check_pending_payments_periodically(application))
+                    except Exception as e:
+                        logger.error(f"❌ Критическая ошибка в потоке проверки платежей: {e}", exc_info=True)
+                
+                payment_checker_thread = threading.Thread(target=start_payment_checker_background, daemon=True)
+                payment_checker_thread.start()
+                logger.info("✅ Запущена фоновая проверка платежей")
+                
+                # run_polling автоматически удаляет webhook и использует drop_pending_updates
+                application.run_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True,
+                    close_loop=False
+                )
+                break
+                
+            except Conflict as e:
+                logger.error(f"Конфликт обнаружен: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (attempt + 1)
+                    logger.warning(f"Ожидание {wait_time} секунд перед повторной попыткой...")
+                    time.sleep(wait_time)
+                    logger.info("Повторная попытка запуска...")
+                else:
+                    logger.error("Достигнуто максимальное количество попыток. Возможно, другой инстанс бота уже запущен.")
+                    logger.error("Убедитесь, что запущен только один экземпляр бота на платформе.")
+                    sys.exit(1)
+                    
+            except KeyboardInterrupt:
+                logger.info("Бот остановлен пользователем")
+                break
+                
+            except Exception as e:
+                logger.error(f"Критическая ошибка при запуске бота: {e}")
+                raise
 
 
 def cleanup_stuck_generations_on_startup():
