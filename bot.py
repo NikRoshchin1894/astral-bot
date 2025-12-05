@@ -14,6 +14,7 @@ import tempfile
 import time
 import uuid
 import threading
+import queue
 from datetime import datetime
 from typing import Optional, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
@@ -4721,6 +4722,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # Глобальная переменная для хранения application (нужна для webhook и проверки платежей)
 telegram_application = None
+# Очередь для передачи обновлений в поток обработки
+update_queue_for_processing = queue.Queue()
 
 
 def create_webhook_app(application_instance):
@@ -4734,13 +4737,10 @@ def create_webhook_app(application_instance):
         try:
             update_data = request.get_json()
             if update_data:
-                # Обрабатываем обновление через очередь обновлений Application
+                # Добавляем обновление в очередь для обработки
                 try:
-                    update = Update.de_json(update_data, application_instance.bot)
-                    if update:
-                        # Добавляем обновление в очередь обработки
-                        application_instance.update_queue.put_nowait(update)
-                        logger.debug(f"📨 Обновление добавлено в очередь: update_id={update.update_id}")
+                    update_queue_for_processing.put_nowait(update_data)
+                    logger.debug("📨 Обновление добавлено в очередь для обработки")
                     return jsonify({'status': 'ok'}), 200
                 except Exception as e:
                     logger.error(f"❌ Ошибка при добавлении обновления в очередь: {e}", exc_info=True)
@@ -5024,110 +5024,163 @@ def main():
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     
-    # Проверяем, установлен ли webhook URL (обязательно для работы бота)
+    # Проверяем, установлен ли webhook URL
     telegram_webhook_url = os.getenv('TELEGRAM_WEBHOOK_URL', '')
     
-    if not telegram_webhook_url:
-        logger.error("❌ TELEGRAM_WEBHOOK_URL не установлен!")
-        logger.error("💡 Бот работает только в режиме WEBHOOK. Установите TELEGRAM_WEBHOOK_URL в переменных окружения.")
-        sys.exit(1)
-    
-    # Режим WEBHOOK
-    logger.info("🌐 Запуск бота в режиме WEBHOOK")
-    
-    # Запускаем webhook сервер (для Telegram и YooKassa)
-    webhook_thread = start_webhook_server(application)
-    
-    if not webhook_thread:
-        logger.error("❌ Не удалось запустить webhook сервер. Проверьте настройки.")
-        return
-    
-    # Задержка для запуска сервера
-    time.sleep(3)
-    
-    # Устанавливаем webhook в Telegram
-    max_retries = 3
-    retry_delay = 5
-    
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
-            logger.info(f"   URL: {telegram_webhook_url}")
-            
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Устанавливаем webhook
-            result = loop.run_until_complete(
-                application.bot.set_webhook(
-                    url=telegram_webhook_url,
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
+    if telegram_webhook_url:
+        # Режим WEBHOOK (для продакшена)
+        logger.info("🌐 Запуск бота в режиме WEBHOOK")
+        
+        # Запускаем webhook сервер (для Telegram и YooKassa)
+        webhook_thread = start_webhook_server(application)
+        
+        if not webhook_thread:
+            logger.error("❌ Не удалось запустить webhook сервер. Проверьте настройки.")
+            return
+        
+        # Задержка для запуска сервера
+        time.sleep(3)
+        
+        # Устанавливаем webhook в Telegram
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
+                logger.info(f"   URL: {telegram_webhook_url}")
+                
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+                # Устанавливаем webhook
+                result = loop.run_until_complete(
+                    application.bot.set_webhook(
+                        url=telegram_webhook_url,
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True
+                    )
                 )
-            )
-            loop.close()
-            
-            if result:
-                logger.info("✅ Webhook успешно установлен в Telegram")
-                break
-            else:
-                logger.warning(f"⚠️  Webhook не установлен (попытка {attempt + 1})")
+                loop.close()
+                
+                if result:
+                    logger.info("✅ Webhook успешно установлен в Telegram")
+                    break
+                else:
+                    logger.warning(f"⚠️  Webhook не установлен (попытка {attempt + 1})")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                    
+            except Conflict as e:
+                logger.error(f"❌ Конфликт при установке webhook: {e}")
+                logger.error("   Возможно, webhook уже установлен другим экземпляром бота")
                 if attempt < max_retries - 1:
                     time.sleep(retry_delay)
-                
-        except Conflict as e:
-            logger.error(f"❌ Конфликт при установке webhook: {e}")
-            logger.error("   Возможно, webhook уже установлен другим экземпляром бота")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                logger.error("   Продолжаем работу - возможно webhook уже установлен")
-                break
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                logger.error("   Бот продолжит работу, но webhook может быть не установлен")
-    
-    logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
-    logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
-    
-    # Запускаем Application для обработки обновлений из очереди
-    def start_application_updater():
-        """Запускает Application для обработки обновлений из очереди"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+                else:
+                    logger.error("   Продолжаем работу - возможно webhook уже установлен")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("   Бот продолжит работу, но webhook может быть не установлен")
+        
+        # Запускаем постоянный поток обработки обновлений
+        def update_processor_thread():
+            """Постоянный поток для обработки обновлений из очереди"""
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Инициализируем Application один раз
+            try:
+                logger.info("🔧 Инициализация Application для обработки обновлений...")
+                loop.run_until_complete(application.initialize())
+                logger.info("✅ Application инициализирован в потоке обработки")
+            except Exception as e:
+                logger.error(f"❌ Ошибка при инициализации Application: {e}", exc_info=True)
+                return
+            
+            # Обрабатываем обновления из очереди
+            async def process_updates():
+                """Асинхронная функция для обработки обновлений"""
+                while True:
+                    try:
+                        # Получаем обновление из очереди (используем get_nowait для неблокирующей проверки)
+                        try:
+                            update_data = update_queue_for_processing.get_nowait()
+                            
+                            # Обрабатываем обновление
+                            update = Update.de_json(update_data, application.bot)
+                            if update:
+                                await application.process_update(update)
+                                logger.debug(f"📨 Обновление обработано: update_id={update.update_id}")
+                            
+                            # Помечаем задачу как выполненную
+                            update_queue_for_processing.task_done()
+                            
+                        except queue.Empty:
+                            # Нет обновлений, ждем немного
+                            await asyncio.sleep(0.1)
+                            continue
+                        
+                    except Exception as e:
+                        logger.error(f"❌ Критическая ошибка в обработчике обновлений: {e}", exc_info=True)
+                        await asyncio.sleep(1)
+            
+            # Запускаем обработку обновлений как фоновую задачу
+            try:
+                task = loop.create_task(process_updates())
+                loop.run_forever()
+            except KeyboardInterrupt:
+                logger.info("🛑 Обработчик обновлений остановлен")
+                task.cancel()
+            finally:
+                loop.close()
+        
+        # Запускаем поток обработки
+        processor_thread = threading.Thread(target=update_processor_thread, daemon=True)
+        processor_thread.start()
+        logger.info("✅ Поток обработки обновлений запущен")
+        
+        logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
+        logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
+        
+        # Держим основной поток живым
         try:
-            loop.run_until_complete(application.initialize())
-            loop.run_until_complete(application.start())
-            loop.run_forever()
-        except Exception as e:
-            logger.error(f"❌ Ошибка в обработчике обновлений: {e}", exc_info=True)
-        finally:
-            loop.close()
-    
-    updater_thread = threading.Thread(target=start_application_updater, daemon=True)
-    updater_thread.start()
-    logger.info("✅ Обработчик обновлений запущен")
-    
-    # Держим основной поток живым
-    try:
-        while True:
-            time.sleep(60)  # Проверяем каждую минуту
-            # Можно добавить health check или другую периодическую логику
-    except KeyboardInterrupt:
-        logger.info("Бот остановлен пользователем")
-        # Удаляем webhook при остановке
+            while True:
+                time.sleep(60)  # Проверяем каждую минуту
+                # Можно добавить health check или другую периодическую логику
+        except KeyboardInterrupt:
+            logger.info("Бот остановлен пользователем")
+            # Удаляем webhook при остановке
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(application.bot.delete_webhook())
+                loop.close()
+                logger.info("✅ Webhook удален из Telegram")
+            except Exception as e:
+                logger.warning(f"⚠️  Не удалось удалить webhook: {e}")
+    else:
+        # Режим POLLING (для разработки/тестирования)
+        logger.info("🔄 Запуск бота в режиме POLLING")
+        logger.info("💡 Для продакшена установите TELEGRAM_WEBHOOK_URL")
+        
+        # Удаляем webhook, если он был установлен ранее
         try:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.bot.delete_webhook())
+            loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
             loop.close()
-            logger.info("✅ Webhook удален из Telegram")
+            logger.info("✅ Старый webhook удален")
         except Exception as e:
             logger.warning(f"⚠️  Не удалось удалить webhook: {e}")
+        
+        # Запускаем polling (блокирующий вызов - не нужен дополнительный цикл)
+        logger.info("🔄 Запуск polling...")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
 
 
 def cleanup_stuck_generations_on_startup():
