@@ -5056,24 +5056,7 @@ def main():
         # Задержка для запуска сервера
         time.sleep(3)
         
-        # Запускаем постоянный поток обработки обновлений
-        def update_processor_thread():
-            """Постоянный поток для обработки обновлений из очереди"""
-            # Создаем новый event loop для этого потока
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Инициализируем Application в этом потоке
-            try:
-                logger.info("🔧 Инициализация Application в потоке обработки...")
-                loop.run_until_complete(application.initialize())
-                logger.info("✅ Application инициализирован в потоке обработки")
-            except Exception as e:
-                logger.error(f"❌ Ошибка при инициализации Application: {e}", exc_info=True)
-                loop.close()
-                return
-            
-            # Устанавливаем webhook в Telegram (в этом же потоке)
+        # Устанавливаем webhook в Telegram (в основном потоке)
         max_retries = 3
         retry_delay = 5
         
@@ -5081,6 +5064,9 @@ def main():
             try:
                 logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
                 logger.info(f"   URL: {telegram_webhook_url}")
+                
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 
                 # Устанавливаем webhook
                 result = loop.run_until_complete(
@@ -5090,6 +5076,7 @@ def main():
                         drop_pending_updates=True
                     )
                 )
+                loop.close()
                 
                 if result:
                     logger.info("✅ Webhook успешно установлен в Telegram")
@@ -5115,6 +5102,23 @@ def main():
                 else:
                     logger.error("   Бот продолжит работу, но webhook может быть не установлен")
         
+        # Запускаем постоянный поток обработки обновлений
+        def update_processor_thread():
+            """Постоянный поток для обработки обновлений из очереди"""
+            # Создаем новый event loop для этого потока
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Инициализируем Application в этом потоке
+            try:
+                logger.info("🔧 Инициализация Application в потоке обработки...")
+                loop.run_until_complete(application.initialize())
+                logger.info("✅ Application инициализирован в потоке обработки")
+            except Exception as e:
+                logger.error(f"❌ Ошибка при инициализации Application: {e}", exc_info=True)
+                loop.close()
+                return
+            
             # Обрабатываем обновления из очереди
             async def process_updates():
                 """Асинхронная функция для обработки обновлений"""
