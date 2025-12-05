@@ -15,6 +15,8 @@ RUN apt-get clean && \
     swig \
     curl \
     && rm -rf /var/lib/apt/lists/*
+    
+# curl уже установлен выше, используется для HEALTHCHECK
 
 # Копируем файл зависимостей
 COPY requirements.txt .
@@ -39,6 +41,10 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 # Открываем порт для webhook (если используется)
 EXPOSE 8080
+
+# Health check для проверки работоспособности приложения
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:8080/health || exit 1
 
 # Команда для запуска бота
 CMD ["python3", "bot.py"]

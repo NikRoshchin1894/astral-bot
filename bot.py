@@ -4864,6 +4864,20 @@ def create_webhook_app(application_instance):
         """Health check endpoint для проверки работоспособности"""
         return jsonify({'status': 'ok'}), 200
     
+    @app.route('/', methods=['GET'])
+    def root():
+        """Корневой endpoint для health check Docker и других проверок"""
+        return jsonify({
+            'status': 'ok',
+            'service': 'Astral Bot',
+            'version': '1.0',
+            'endpoints': {
+                'health': '/health',
+                'telegram_webhook': '/webhook/telegram',
+                'yookassa_webhook': '/webhook/yookassa'
+            }
+        }), 200
+    
     return app
 
 
@@ -4995,9 +5009,15 @@ def start_webhook_server(application_instance):
                     logger.info(f"   📱 Telegram webhook: /webhook/telegram")
                 if need_yookassa_webhook:
                     logger.info(f"   💳 YooKassa webhook: /webhook/yookassa")
+                logger.info(f"   ❤️  Health check: / и /health")
+                
+                # Используем встроенный Flask server (более совместим)
+                # Для production рекомендуется использовать gunicorn или waitress через отдельную команду
+                logger.info("   Используется встроенный Flask server (threaded mode)")
                 app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
             except Exception as e:
                 logger.error(f"❌ Ошибка в Flask сервере: {e}", exc_info=True)
+                raise
         
         webhook_thread = threading.Thread(target=run_flask, daemon=True)
         webhook_thread.start()
@@ -5053,8 +5073,10 @@ def main():
             logger.error("❌ Не удалось запустить webhook сервер. Проверьте настройки.")
             return
         
-        # Задержка для запуска сервера
-        time.sleep(3)
+        # Небольшая задержка для гарантии запуска Flask сервера
+        # Flask запускается в отдельном потоке, поэтому не блокирует
+        time.sleep(2)
+        logger.info("⏳ Ожидание запуска Flask сервера...")
         
         # Устанавливаем webhook в Telegram (в основном потоке)
         max_retries = 3
@@ -5137,17 +5159,17 @@ def main():
                                     try:
                                         update_data = update_queue_for_processing.get_nowait()
                                         
-                # Создаем объект Update
-                update = Update.de_json(update_data, application.bot)
-                if update:
-                    # Добавляем обновление в очередь Application напрямую
-                    try:
-                        application.update_queue.put_nowait(update)
-                        logger.debug(f"📨 Обновление добавлено в Application: update_id={update.update_id}")
-                    except Exception as queue_error:
-                        logger.error(f"❌ Ошибка при добавлении в очередь Application: {queue_error}")
-                
-                update_queue_for_processing.task_done()
+                                        # Создаем объект Update
+                                        update = Update.de_json(update_data, application.bot)
+                                        if update:
+                                            # Добавляем обновление в очередь Application напрямую
+                                            try:
+                                                application.update_queue.put_nowait(update)
+                                                logger.debug(f"📨 Обновление добавлено в Application: update_id={update.update_id}")
+                                            except Exception as queue_error:
+                                                logger.error(f"❌ Ошибка при добавлении в очередь Application: {queue_error}")
+                                        
+                                        update_queue_for_processing.task_done()
                                         
                                     except queue.Empty:
                                         # Нет обновлений, ждем немного
