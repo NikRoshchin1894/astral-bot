@@ -15,7 +15,7 @@ RUN apt-get clean && \
     swig \
     curl \
     && rm -rf /var/lib/apt/lists/*
-    
+
 # curl уже установлен выше, используется для HEALTHCHECK
 
 # Копируем файл зависимостей

@@ -4756,7 +4756,7 @@ def create_webhook_app(application_instance):
                 try:
                     update_queue_for_processing.put_nowait(update_data)
                     logger.debug("📨 Обновление добавлено в очередь для обработки")
-                    return jsonify({'status': 'ok'}), 200
+                return jsonify({'status': 'ok'}), 200
                 except Exception as e:
                     logger.error(f"❌ Ошибка при добавлении обновления в очередь: {e}", exc_info=True)
                     return jsonify({'status': 'error', 'message': str(e)}), 500
@@ -5138,8 +5138,8 @@ def main():
                 logger.info("🚀 Запуск Application в фоновом потоке...")
                 
                 # Создаем новый event loop для этого потока
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
                 
                 async def run_application():
                     """Запускает Application и обрабатывает обновления из очереди"""
@@ -5176,7 +5176,7 @@ def main():
                                         await asyncio.sleep(0.1)
                                         continue
                                     
-                                except Exception as e:
+            except Exception as e:
                                     logger.error(f"❌ Ошибка при обработке обновления: {e}", exc_info=True)
                                     await asyncio.sleep(1)
                         
@@ -5238,13 +5238,13 @@ def main():
         logger.info("💡 Для продакшена установите TELEGRAM_WEBHOOK_URL")
         
         # Удаляем webhook, если он был установлен ранее
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
-            loop.close()
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
+                    loop.close()
             logger.info("✅ Старый webhook удален")
-        except Exception as e:
+                    except Exception as e:
             logger.warning(f"⚠️  Не удалось удалить webhook: {e}")
         
         # Запускаем polling (блокирующий вызов - не нужен дополнительный цикл)
