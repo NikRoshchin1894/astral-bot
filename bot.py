@@ -4938,8 +4938,8 @@ def start_webhook_server(application_instance):
     need_yookassa_webhook = bool(yookassa_webhook_url)
     
     if not need_telegram_webhook and not need_yookassa_webhook:
-        logger.warning("⚠️ TELEGRAM_WEBHOOK_URL и YOOKASSA_WEBHOOK_URL не установлены.")
-        logger.info("💡 Webhook не будет запущен. Бот будет использовать polling.")
+        logger.error("❌ TELEGRAM_WEBHOOK_URL и YOOKASSA_WEBHOOK_URL не установлены.")
+        logger.error("💡 Установите хотя бы один из webhook URLs для работы бота.")
         return None
     
     try:
@@ -5009,175 +5009,92 @@ def main():
     application.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     
-    # Проверяем, какой режим использовать: webhook или polling
+    # Проверяем, установлен ли webhook URL (обязательно для работы бота)
     telegram_webhook_url = os.getenv('TELEGRAM_WEBHOOK_URL', '')
     
-    if telegram_webhook_url:
-        # Режим WEBHOOK
-        logger.info("🌐 Запуск бота в режиме WEBHOOK")
-        
-        # Запускаем webhook сервер (для Telegram и YooKassa)
-        webhook_thread = start_webhook_server(application)
-        
-        if not webhook_thread:
-            logger.error("❌ Не удалось запустить webhook сервер. Проверьте настройки.")
-            return
-        
-        # Задержка для запуска сервера
-        time.sleep(3)
-        
-        # Устанавливаем webhook в Telegram
-        max_retries = 3
-        retry_delay = 5
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
-                logger.info(f"   URL: {telegram_webhook_url}")
-                
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                # Устанавливаем webhook
-                result = loop.run_until_complete(
-                    application.bot.set_webhook(
-                        url=telegram_webhook_url,
-                        allowed_updates=Update.ALL_TYPES,
-                        drop_pending_updates=True
-                    )
-                )
-                loop.close()
-                
-                if result:
-                    logger.info("✅ Webhook успешно установлен в Telegram")
-                    break
-                else:
-                    logger.warning(f"⚠️  Webhook не установлен (попытка {attempt + 1})")
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-                    
-            except Conflict as e:
-                logger.error(f"❌ Конфликт при установке webhook: {e}")
-                logger.error("   Возможно, webhook уже установлен другим экземпляром бота")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                else:
-                    logger.error("   Продолжаем работу - возможно webhook уже установлен")
-                    break
-                    
-            except Exception as e:
-                logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                else:
-                    logger.error("   Бот продолжит работу, но webhook может быть не установлен")
-        
-        # Запускаем периодическую проверку платежей в отдельном потоке
-        def start_payment_checker_background():
-            """Запускает проверку платежей в отдельном потоке с собственным event loop"""
-            time.sleep(5)  # Небольшая задержка для инициализации бота
+    if not telegram_webhook_url:
+        logger.error("❌ TELEGRAM_WEBHOOK_URL не установлен!")
+        logger.error("💡 Бот работает только в режиме WEBHOOK. Установите TELEGRAM_WEBHOOK_URL в переменных окружения.")
+        sys.exit(1)
+    
+    # Режим WEBHOOK
+    logger.info("🌐 Запуск бота в режиме WEBHOOK")
+    
+    # Запускаем webhook сервер (для Telegram и YooKassa)
+    webhook_thread = start_webhook_server(application)
+    
+    if not webhook_thread:
+        logger.error("❌ Не удалось запустить webhook сервер. Проверьте настройки.")
+        return
+    
+    # Задержка для запуска сервера
+    time.sleep(3)
+    
+    # Устанавливаем webhook в Telegram
+    max_retries = 3
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
+            logger.info(f"   URL: {telegram_webhook_url}")
+            
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(check_pending_payments_periodically(application))
-            except Exception as e:
-                logger.error(f"❌ Критическая ошибка в потоке проверки платежей: {e}", exc_info=True)
-        
-        payment_checker_thread = threading.Thread(target=start_payment_checker_background, daemon=True)
-        payment_checker_thread.start()
-        logger.info("✅ Запущена фоновая проверка платежей")
-        
-        logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
-        logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
-        
-        # Держим основной поток живым
-        try:
-            while True:
-                time.sleep(60)  # Проверяем каждую минуту
-                # Можно добавить health check или другую периодическую логику
-        except KeyboardInterrupt:
-            logger.info("Бот остановлен пользователем")
-            # Удаляем webhook при остановке
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(application.bot.delete_webhook())
-                loop.close()
-                logger.info("✅ Webhook удален из Telegram")
-            except Exception as e:
-                logger.warning(f"⚠️  Не удалось удалить webhook: {e}")
-    
-    else:
-        # Режим POLLING (fallback)
-        logger.info("🔄 Запуск бота в режиме POLLING (TELEGRAM_WEBHOOK_URL не установлен)")
-        
-        # Запускаем webhook сервер для YooKassa (если настроен)
-        start_webhook_server(application)
-        
-        # Задержка перед запуском
-        time.sleep(2)
-        
-        logger.info("Бот запущен!")
-        
-        # Попытки запуска с обработкой ошибки Conflict
-        max_retries = 3
-        retry_delay = 5
-        
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Попытка запуска {attempt + 1}/{max_retries}...")
-                logger.info("🗑️  Удаление webhook перед запуском polling...")
-                try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(application.bot.delete_webhook(drop_pending_updates=True))
-                    loop.close()
-                    logger.info("✅ Webhook удален успешно")
-                except Exception as webhook_error:
-                    logger.warning(f"⚠️  Не удалось удалить webhook (возможно, он не был установлен): {webhook_error}")
-                
-                # Запускаем периодическую проверку платежей в отдельном потоке
-                def start_payment_checker_background():
-                    """Запускает проверку платежей в отдельном потоке с собственным event loop"""
-                    time.sleep(5)
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        loop.run_until_complete(check_pending_payments_periodically(application))
-                    except Exception as e:
-                        logger.error(f"❌ Критическая ошибка в потоке проверки платежей: {e}", exc_info=True)
-                
-                payment_checker_thread = threading.Thread(target=start_payment_checker_background, daemon=True)
-                payment_checker_thread.start()
-                logger.info("✅ Запущена фоновая проверка платежей")
-                
-                # run_polling автоматически удаляет webhook и использует drop_pending_updates
-                application.run_polling(
+            
+            # Устанавливаем webhook
+            result = loop.run_until_complete(
+                application.bot.set_webhook(
+                    url=telegram_webhook_url,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
-                    close_loop=False
+                    drop_pending_updates=True
                 )
+            )
+            loop.close()
+            
+            if result:
+                logger.info("✅ Webhook успешно установлен в Telegram")
                 break
-                
-            except Conflict as e:
-                logger.error(f"Конфликт обнаружен: {e}")
+            else:
+                logger.warning(f"⚠️  Webhook не установлен (попытка {attempt + 1})")
                 if attempt < max_retries - 1:
-                    wait_time = retry_delay * (attempt + 1)
-                    logger.warning(f"Ожидание {wait_time} секунд перед повторной попыткой...")
-                    time.sleep(wait_time)
-                    logger.info("Повторная попытка запуска...")
-                else:
-                    logger.error("Достигнуто максимальное количество попыток. Возможно, другой инстанс бота уже запущен.")
-                    logger.error("Убедитесь, что запущен только один экземпляр бота на платформе.")
-                    sys.exit(1)
-                    
-            except KeyboardInterrupt:
-                logger.info("Бот остановлен пользователем")
+                    time.sleep(retry_delay)
+                
+        except Conflict as e:
+            logger.error(f"❌ Конфликт при установке webhook: {e}")
+            logger.error("   Возможно, webhook уже установлен другим экземпляром бота")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error("   Продолжаем работу - возможно webhook уже установлен")
                 break
                 
-            except Exception as e:
-                logger.error(f"Критическая ошибка при запуске бота: {e}")
-                raise
+        except Exception as e:
+            logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+            else:
+                logger.error("   Бот продолжит работу, но webhook может быть не установлен")
+    
+    logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
+    logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
+    
+    # Держим основной поток живым
+    try:
+        while True:
+            time.sleep(60)  # Проверяем каждую минуту
+            # Можно добавить health check или другую периодическую логику
+    except KeyboardInterrupt:
+        logger.info("Бот остановлен пользователем")
+        # Удаляем webhook при остановке
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(application.bot.delete_webhook())
+            loop.close()
+            logger.info("✅ Webhook удален из Telegram")
+        except Exception as e:
+            logger.warning(f"⚠️  Не удалось удалить webhook: {e}")
 
 
 def cleanup_stuck_generations_on_startup():
