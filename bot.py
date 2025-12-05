@@ -776,8 +776,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 payment_id = payment_info[0]
                 payment_status = payment_info[1]
                 
-                # Проверяем статус платежа через API, если он еще pending
-                if payment_status == 'pending':
+                # Проверяем статус платежа через API, если он еще pending или canceled
+                if payment_status == 'pending' or payment_status == 'canceled':
                     try:
                         payment_info_api = await check_yookassa_payment_status(payment_id)
                         if payment_info_api:
@@ -803,13 +803,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     'payment_method_limit_exceeded': 'Превышен лимит по способу оплаты',
                                     'payment_method_restricted': 'Способ оплаты недоступен',
                                     'permission_revoked': 'Разрешение на платеж отозвано',
-                                    'unsupported_mobile_operator': 'Мобильный оператор не поддерживается'
+                                    'unsupported_mobile_operator': 'Мобильный оператор не поддерживается',
+                                    'not_found': 'Платеж не был создан или был удален. Попробуйте создать новый платеж.'
                                 }
                                 
                                 if cancel_reason and cancel_reason in reason_messages:
                                     cancel_message += f"*Причина:* {reason_messages[cancel_reason]}\n\n"
+                        else:
+                            # Платеж не найден в YooKassa (404) - уже помечен как canceled
+                            # Это может произойти, если пользователь вернулся до завершения создания платежа
+                            cancel_message += "*Причина:* Платеж не был создан или был отменен до начала оплаты.\n\n"
+                            cancel_message += "💡 *Что делать:*\n"
+                            cancel_message += "• Попробуйте создать новый платеж\n"
+                            cancel_message += "• Убедитесь, что вы не закрыли страницу оплаты слишком рано\n"
+                            cancel_message += "• Если проблема повторяется, обратитесь в поддержку\n\n"
                     except Exception as e:
                         logger.warning(f"Не удалось проверить статус платежа: {e}")
+                        # Если не удалось проверить, но платеж в базе canceled, добавляем общее сообщение
+                        if payment_status == 'canceled':
+                            cancel_message += "*Примечание:* Платеж был отменен. Попробуйте создать новый платеж.\n\n"
+                elif payment_status == 'canceled':
+                    # Платеж уже помечен как canceled в базе
+                    cancel_message += "*Примечание:* Платеж был отменен ранее.\n\n"
         except Exception as e:
             logger.warning(f"Ошибка при получении информации о платеже: {e}")
         finally:
@@ -5059,47 +5074,47 @@ def main():
                 return
             
             # Устанавливаем webhook в Telegram (в этом же потоке)
-            max_retries = 3
-            retry_delay = 5
-            
-            for attempt in range(max_retries):
-                try:
-                    logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
-                    logger.info(f"   URL: {telegram_webhook_url}")
-                    
-                    # Устанавливаем webhook
-                    result = loop.run_until_complete(
-                        application.bot.set_webhook(
-                            url=telegram_webhook_url,
-                            allowed_updates=Update.ALL_TYPES,
-                            drop_pending_updates=True
-                        )
+        max_retries = 3
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"🔗 Установка webhook в Telegram (попытка {attempt + 1}/{max_retries})...")
+                logger.info(f"   URL: {telegram_webhook_url}")
+                
+                # Устанавливаем webhook
+                result = loop.run_until_complete(
+                    application.bot.set_webhook(
+                        url=telegram_webhook_url,
+                        allowed_updates=Update.ALL_TYPES,
+                        drop_pending_updates=True
                     )
+                )
+                
+                if result:
+                    logger.info("✅ Webhook успешно установлен в Telegram")
+                    break
+                else:
+                    logger.warning(f"⚠️  Webhook не установлен (попытка {attempt + 1})")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
                     
-                    if result:
-                        logger.info("✅ Webhook успешно установлен в Telegram")
-                        break
-                    else:
-                        logger.warning(f"⚠️  Webhook не установлен (попытка {attempt + 1})")
-                        if attempt < max_retries - 1:
-                            time.sleep(retry_delay)
-                        
-                except Conflict as e:
-                    logger.error(f"❌ Конфликт при установке webhook: {e}")
-                    logger.error("   Возможно, webhook уже установлен другим экземпляром бота")
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-                    else:
-                        logger.error("   Продолжаем работу - возможно webhook уже установлен")
-                        break
-                        
-                except Exception as e:
-                    logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
-                    if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
-                    else:
-                        logger.error("   Бот продолжит работу, но webhook может быть не установлен")
-            
+            except Conflict as e:
+                logger.error(f"❌ Конфликт при установке webhook: {e}")
+                logger.error("   Возможно, webhook уже установлен другим экземпляром бота")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("   Продолжаем работу - возможно webhook уже установлен")
+                    break
+                    
+            except Exception as e:
+                logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logger.error("   Бот продолжит работу, но webhook может быть не установлен")
+        
             # Обрабатываем обновления из очереди
             async def process_updates():
                 """Асинхронная функция для обработки обновлений"""
