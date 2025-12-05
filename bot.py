@@ -2581,6 +2581,23 @@ async def check_yookassa_payment_status(yookassa_payment_id: str) -> Optional[di
             payment_info = response.json()
             logger.info(f"✅ Статус платежа {yookassa_payment_id}: {payment_info.get('status')}")
             return payment_info
+        elif response.status_code == 404:
+            # Платеж не найден - возможно, был удален или не существует
+            error_data = response.json() if response.text else {}
+            logger.warning(f"⚠️  Платеж {yookassa_payment_id} не найден в YooKassa (404). Помечаем как canceled.")
+            # Помечаем платеж как canceled в базе
+            try:
+                update_payment_status(yookassa_payment_id, 'canceled', {
+                    'status': 'canceled',
+                    'cancellation_details': {
+                        'reason': 'not_found',
+                        'party': 'yookassa'
+                    },
+                    'description': 'Payment not found in YooKassa (404)'
+                })
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обновлении статуса платежа: {e}")
+            return None
         else:
             logger.error(f"❌ Ошибка при проверке статуса платежа: {response.status_code} - {response.text}")
             return None
@@ -4717,22 +4734,17 @@ def create_webhook_app(application_instance):
         try:
             update_data = request.get_json()
             if update_data:
-                # Обрабатываем обновление асинхронно
-                def process_update():
-                    try:
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        update = Update.de_json(update_data, application_instance.bot)
-                        loop.run_until_complete(application_instance.process_update(update))
-                        loop.close()
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка при обработке обновления от Telegram: {e}", exc_info=True)
-                
-                # Запускаем обработку в отдельном потоке
-                update_thread = threading.Thread(target=process_update, daemon=True)
-                update_thread.start()
-                
-                return jsonify({'status': 'ok'}), 200
+                # Обрабатываем обновление через очередь обновлений Application
+                try:
+                    update = Update.de_json(update_data, application_instance.bot)
+                    if update:
+                        # Добавляем обновление в очередь обработки
+                        application_instance.update_queue.put_nowait(update)
+                        logger.debug(f"📨 Обновление добавлено в очередь: update_id={update.update_id}")
+                    return jsonify({'status': 'ok'}), 200
+                except Exception as e:
+                    logger.error(f"❌ Ошибка при добавлении обновления в очередь: {e}", exc_info=True)
+                    return jsonify({'status': 'error', 'message': str(e)}), 500
             else:
                 return jsonify({'status': 'error', 'message': 'Empty request'}), 400
         except Exception as e:
@@ -4913,6 +4925,9 @@ async def check_pending_payments_periodically(application):
                                             await check_and_process_pending_payment(user_id, application)
                                     except Exception as process_error:
                                         logger.error(f"❌ Ошибка при обработке платежа для user_id {user_id}: {process_error}", exc_info=True)
+                            else:
+                                # Если payment_info = None, значит платеж не найден (404) и уже помечен как canceled
+                                logger.debug(f"ℹ️  Платеж {yookassa_payment_id} не найден, статус уже обновлен")
                             
                             # Небольшая задержка между проверками
                             await asyncio.sleep(1)
@@ -5078,6 +5093,24 @@ def main():
     
     logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
     logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
+    
+    # Запускаем Application для обработки обновлений из очереди
+    def start_application_updater():
+        """Запускает Application для обработки обновлений из очереди"""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(application.initialize())
+            loop.run_until_complete(application.start())
+            loop.run_forever()
+        except Exception as e:
+            logger.error(f"❌ Ошибка в обработчике обновлений: {e}", exc_info=True)
+        finally:
+            loop.close()
+    
+    updater_thread = threading.Thread(target=start_application_updater, daemon=True)
+    updater_thread.start()
+    logger.info("✅ Обработчик обновлений запущен")
     
     # Держим основной поток живым
     try:
