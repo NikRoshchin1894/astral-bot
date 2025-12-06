@@ -729,14 +729,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if start_param in ['payment_success', 'payment_cancel']:
         logger.info(f"🔍 Пользователь {user_id} вернулся после оплаты (start_param={start_param}), проверяем статус платежа")
         
-        # Сначала проверяем, есть ли неоплаченные или успешные платежи
-        payment_processed = await check_and_process_pending_payment(user_id, context)
-        if payment_processed:
-            # Если платеж был обработан, показываем главное меню
-            logger.info(f"✅ Платеж для пользователя {user_id} успешно обработан")
-            return
-        
-        # Если платеж не обработан автоматически, проверяем статус последнего платежа в базе
+        # Проверяем статус последнего платежа в базе и обрабатываем его
         conn, db_type = get_db_connection()
         cursor = conn.cursor()
         
@@ -768,20 +761,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
                 # Если платеж успешен, обрабатываем его
                 if payment_status == 'succeeded':
-                    logger.info(f"✅ Платеж {payment_id} успешен в базе, обрабатываем его")
+                    logger.info(f"✅ Платеж {payment_id} успешен в базе, запускаем генерацию натальной карты")
                     conn.close()
-                    payment_processed = await check_and_process_pending_payment(user_id, context)
-                    if payment_processed:
-                        logger.info(f"✅ Платеж {payment_id} успешно обработан")
+                    
+                    # Проверяем, есть ли профиль пользователя
+                    user_data = context.user_data
+                    if not user_data.get('birth_name'):
+                        loaded_data = load_user_profile(user_id)
+                        if loaded_data:
+                            user_data.update(loaded_data)
+                    
+                    has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+                    
+                    if has_profile:
+                        # Профиль заполнен - запускаем генерацию сразу
+                        logger.info(f"✅ Профиль пользователя {user_id} заполнен, запускаем генерацию натальной карты")
+                        await handle_natal_chart_request_from_payment(user_id, context)
                         return
                     else:
-                        # Платеж успешен, но не обработан автоматически
+                        # Профиль не заполнен - показываем сообщение с кнопкой для заполнения
                         await update.message.reply_text(
                             "✅ *Оплата получена!*\n\n"
-                            "Обрабатываю платеж... Пожалуйста, подождите немного. "
-                            "Если натальная карта не начнет генерироваться автоматически, нажмите кнопку ниже.",
+                            "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
+                            "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
                             reply_markup=InlineKeyboardMarkup([[
-                                InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                                InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
                                 InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
                             ]]),
                             parse_mode='Markdown'
@@ -799,24 +803,79 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             logger.info(f"🔍 Статус платежа через API: {api_status}")
                             
                             if api_status == 'succeeded':
-                                logger.info(f"✅ Платеж {payment_id} успешен при проверке через API, обновляем статус")
+                                logger.info(f"✅ Платеж {payment_id} успешен при проверке через API, запускаем генерацию натальной карты")
                                 update_payment_status(payment_id, 'succeeded', payment_info_api)
                                 mark_user_paid(user_id)
-                                payment_processed = await check_and_process_pending_payment(user_id, context)
-                                if payment_processed:
-                                    logger.info(f"✅ Платеж {payment_id} успешно обработан после проверки через API")
+                                
+                                # Проверяем, есть ли профиль пользователя
+                                user_data = context.user_data
+                                if not user_data.get('birth_name'):
+                                    loaded_data = load_user_profile(user_id)
+                                    if loaded_data:
+                                        user_data.update(loaded_data)
+                                
+                                has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+                                
+                                if has_profile:
+                                    # Профиль заполнен - запускаем генерацию сразу
+                                    logger.info(f"✅ Профиль пользователя {user_id} заполнен, запускаем генерацию натальной карты")
+                                    await handle_natal_chart_request_from_payment(user_id, context)
                                     return
                                 else:
+                                    # Профиль не заполнен - показываем сообщение с кнопкой для заполнения
                                     await update.message.reply_text(
                                         "✅ *Оплата получена!*\n\n"
-                                        "Обрабатываю платеж... Пожалуйста, подождите немного.",
+                                        "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
+                                        "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
                                         reply_markup=InlineKeyboardMarkup([[
-                                            InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                                            InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
                                             InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
                                         ]]),
                                         parse_mode='Markdown'
                                     )
                                     return
+                            elif api_status == 'canceled':
+                                # Платеж был отменен
+                                cancellation_details = payment_info_api.get('cancellation_details', {})
+                                cancel_reason = cancellation_details.get('reason', '')
+                                
+                                reason_messages = {
+                                    '3d_secure_failed': 'Ошибка 3D Secure аутентификации',
+                                    'call_issuer': 'Банк отклонил платеж. Обратитесь в банк для уточнения причины.',
+                                    'canceled_by_merchant': 'Платеж отменен магазином',
+                                    'expired_on_confirmation': 'Время на оплату истекло',
+                                    'expired_on_capture': 'Время на подтверждение платежа истекло',
+                                    'fraud_suspected': 'Платеж отклонен из-за подозрения в мошенничестве',
+                                    'insufficient_funds': 'Недостаточно средств на карте',
+                                    'invalid_csc': 'Неверный CVV/CVC код',
+                                    'invalid_card_number': 'Неверный номер карты',
+                                    'invalid_cardholder_name': 'Неверное имя держателя карты',
+                                    'issuer_unavailable': 'Банк-эмитент недоступен. Попробуйте позже.',
+                                    'payment_method_limit_exceeded': 'Превышен лимит по способу оплаты',
+                                    'payment_method_restricted': 'Способ оплаты недоступен',
+                                    'permission_revoked': 'Разрешение на платеж отозвано',
+                                    'unsupported_mobile_operator': 'Мобильный оператор не поддерживается',
+                                    'not_found': 'Платеж не был создан или был удален. Попробуйте создать новый платеж.'
+                                }
+                                
+                                if cancel_reason and cancel_reason in reason_messages:
+                                    cancel_message = f"❌ *Оплата отменена*\n\n*Причина:* {reason_messages[cancel_reason]}\n\n"
+                                else:
+                                    cancel_message = "❌ *Оплата отменена*\n\n*Причина:* Платеж не был создан или был отменен до начала оплаты.\n\n"
+                                
+                                cancel_message += "Вы можете попробовать оплатить позже или обратиться в поддержку, если проблема повторяется."
+                                
+                                await update.message.reply_text(
+                                    cancel_message,
+                                    reply_markup=InlineKeyboardMarkup([[
+                                        InlineKeyboardButton("💳 Попробовать оплатить снова", callback_data='buy_natal_chart'),
+                                        InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                                    ]]),
+                                    parse_mode='Markdown'
+                                )
+                                log_event(user_id, 'payment_cancel_return', {'start_param': start_param, 'cancel_reason': cancel_reason})
+                                return
                     except Exception as e:
                         logger.warning(f"⚠️ Не удалось проверить статус платежа через API: {e}")
             
@@ -857,165 +916,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log_event(user_id, 'payment_cancel_return', {'start_param': start_param})
             return
     
-    # Старый код для payment_cancel удален - теперь обрабатывается выше
-        # Проверяем, есть ли информация о последнем платеже пользователя
-        # ВАЖНО: Сначала проверяем, есть ли успешный платеж, даже если возврат через payment_cancel
-        logger.info(f"🔍 Пользователь {user_id} вернулся через payment_cancel, проверяем статус платежа")
-        
-        conn, db_type = get_db_connection()
-        cursor = conn.cursor()
-        
-        cancel_message = "❌ *Оплата отменена*\n\n"
-        
-        try:
-            # Пытаемся получить информацию о последнем платеже
-            if db_type == 'postgresql':
-                cursor.execute('''
-                    SELECT yookassa_payment_id, status, created_at
-                    FROM payments
-                    WHERE user_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                ''', (user_id,))
-            else:
-                cursor.execute('''
-                    SELECT yookassa_payment_id, status, created_at
-                    FROM payments
-                    WHERE user_id = ?
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                ''', (user_id,))
-            
-            payment_info = cursor.fetchone()
-            
-            if payment_info:
-                payment_id = payment_info[0]
-                payment_status = payment_info[1]
-                logger.info(f"🔍 Найден платеж {payment_id} со статусом '{payment_status}' для пользователя {user_id}")
-                
-                # ВАЖНО: Если статус уже succeeded, обрабатываем его СРАЗУ, не показывая отмену
-                if payment_status == 'succeeded':
-                    logger.info(f"✅✅✅ Платеж {payment_id} УЖЕ УСПЕШЕН в базе! Обрабатываем его и НЕ показываем отмену!")
-                    logger.info(f"✅ Платеж {payment_id} уже успешен в базе при возврате через payment_cancel, обрабатываем его")
-                    conn.close()
-                    payment_processed = await check_and_process_pending_payment(user_id, context)
-                    if payment_processed:
-                        logger.info(f"✅ Платеж {payment_id} успешно обработан, не показываем сообщение об отмене")
-                        return
-                    else:
-                        logger.warning(f"⚠️ Платеж {payment_id} успешен, но не обработан автоматически. Показываем сообщение пользователю.")
-                        await update.message.reply_text(
-                            "✅ *Оплата получена!*\n\n"
-                            "Обрабатываю платеж... Пожалуйста, подождите немного. "
-                            "Если натальная карта не начнет генерироваться автоматически, нажмите кнопку ниже.",
-                            reply_markup=InlineKeyboardMarkup([[
-                                InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
-                                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                            ]]),
-                            parse_mode='Markdown'
-                        )
-                        return
-                
-                # Проверяем статус платежа через API, если он еще pending или canceled
-                # ВАЖНО: Также проверяем, если start_param = 'payment_cancel', но платеж может быть успешен
-                if payment_status in ['pending', 'canceled']:
-                    try:
-                        payment_info_api = await check_yookassa_payment_status(payment_id)
-                        if payment_info_api:
-                            payment_status = payment_info_api.get('status', payment_status)
-                            
-                            # ВАЖНО: Если платеж успешен, обрабатываем его как успешный!
-                            if payment_status == 'succeeded':
-                                logger.info(f"✅ Платеж {payment_id} успешен при проверке через API после payment_cancel")
-                                # Обновляем статус в базе
-                                update_payment_status(payment_id, 'succeeded', payment_info_api)
-                                # Помечаем пользователя как оплатившего
-                                mark_user_paid(user_id)
-                                # Обрабатываем платеж как успешный
-                                payment_processed = await check_and_process_pending_payment(user_id, context)
-                                if payment_processed:
-                                    # Платеж обработан успешно, не показываем сообщение об отмене
-                                    return
-                                else:
-                                    # Платеж успешен, но что-то пошло не так с обработкой
-                                    await update.message.reply_text(
-                                        "✅ *Оплата получена!*\n\n"
-                                        "Обрабатываю платеж... Пожалуйста, подождите немного. "
-                                        "Если натальная карта не начнет генерироваться автоматически, нажмите кнопку ниже.",
-                                        reply_markup=InlineKeyboardMarkup([[
-                                            InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
-                                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                                        ]]),
-                                        parse_mode='Markdown'
-                                    )
-                                    return
-                            
-                            # Если платеж был отменен, получаем причину
-                            elif payment_status == 'canceled':
-                                cancellation_details = payment_info_api.get('cancellation_details', {})
-                                cancel_reason = cancellation_details.get('reason', '')
-                                
-                                # Добавляем информацию о причине отмены
-                                reason_messages = {
-                                    '3d_secure_failed': 'Ошибка 3D Secure аутентификации',
-                                    'call_issuer': 'Банк отклонил платеж. Обратитесь в банк для уточнения причины.',
-                                    'canceled_by_merchant': 'Платеж отменен магазином',
-                                    'expired_on_confirmation': 'Время на оплату истекло',
-                                    'expired_on_capture': 'Время на подтверждение платежа истекло',
-                                    'fraud_suspected': 'Платеж отклонен из-за подозрения в мошенничестве',
-                                    'insufficient_funds': 'Недостаточно средств на карте',
-                                    'invalid_csc': 'Неверный CVV/CVC код',
-                                    'invalid_card_number': 'Неверный номер карты',
-                                    'invalid_cardholder_name': 'Неверное имя держателя карты',
-                                    'issuer_unavailable': 'Банк-эмитент недоступен. Попробуйте позже.',
-                                    'payment_method_limit_exceeded': 'Превышен лимит по способу оплаты',
-                                    'payment_method_restricted': 'Способ оплаты недоступен',
-                                    'permission_revoked': 'Разрешение на платеж отозвано',
-                                    'unsupported_mobile_operator': 'Мобильный оператор не поддерживается',
-                                    'not_found': 'Платеж не был создан или был удален. Попробуйте создать новый платеж.'
-                                }
-                                
-                                if cancel_reason and cancel_reason in reason_messages:
-                                    cancel_message += f"*Причина:* {reason_messages[cancel_reason]}\n\n"
-                        else:
-                            # Платеж не найден в YooKassa (404) - уже помечен как canceled
-                            # Это может произойти, если пользователь вернулся до завершения создания платежа
-                            cancel_message += "*Причина:* Платеж не был создан или был отменен до начала оплаты.\n\n"
-                            cancel_message += "💡 *Что делать:*\n"
-                            cancel_message += "• Попробуйте создать новый платеж\n"
-                            cancel_message += "• Убедитесь, что вы не закрыли страницу оплаты слишком рано\n"
-                            cancel_message += "• Если проблема повторяется, обратитесь в поддержку\n\n"
-                    except Exception as e:
-                        logger.warning(f"Не удалось проверить статус платежа: {e}")
-                        # Если не удалось проверить, но платеж в базе canceled, добавляем общее сообщение
-                        if payment_status == 'canceled':
-                            cancel_message += "*Примечание:* Платеж был отменен. Попробуйте создать новый платеж.\n\n"
-                elif payment_status == 'canceled':
-                    # Платеж уже помечен как canceled в базе
-                    cancel_message += "*Примечание:* Платеж был отменен ранее.\n\n"
-        except Exception as e:
-            logger.warning(f"Ошибка при получении информации о платеже: {e}")
-        finally:
-            conn.close()
-        
-        cancel_message += "Вы можете попробовать оплатить позже или обратиться в поддержку, если проблема повторяется."
-        
-        await update.message.reply_text(
-            cancel_message,
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("💳 Попробовать оплатить снова", callback_data='buy_natal_chart'),
-                InlineKeyboardButton("💬 Поддержка", callback_data='support'),
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]]),
-            parse_mode='Markdown'
-        )
-        
-        # Логируем событие отмены
-        log_event(user_id, 'payment_cancel_return', {
-            'start_param': start_param
-        })
-        
-        return
     
     # Логируем событие старта
     log_event(user_id, 'start', {
