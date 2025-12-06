@@ -5079,11 +5079,53 @@ def create_webhook_app(application_instance):
 
 
 async def process_payment_async(user_id: int, application):
-    """Асинхронная обработка успешного платежа"""
+    """Асинхронная обработка успешного платежа - запускает генерацию натальной карты"""
     try:
-        # Проверяем и обрабатываем платеж
-        # Передаем Application - функция сама создаст wrapper
-        await check_and_process_pending_payment(user_id, application)
+        logger.info(f"🚀 Обработка успешного платежа для пользователя {user_id} через webhook")
+        
+        # Создаем Context wrapper для Application
+        from telegram.ext import ContextTypes
+        if isinstance(application, Application):
+            context = ApplicationContextWrapper(application, user_id)
+        else:
+            context = application
+        
+        # Загружаем данные пользователя
+        user_data = context.user_data
+        if not user_data.get('birth_name'):
+            loaded_data = load_user_profile(user_id)
+            if loaded_data:
+                user_data.update(loaded_data)
+        
+        # Проверяем наличие всех необходимых данных профиля
+        birth_name = user_data.get('birth_name')
+        birth_date = user_data.get('birth_date')
+        birth_time = user_data.get('birth_time')
+        birth_place = user_data.get('birth_place')
+        
+        # Если профиль не заполнен, отправляем сообщение с кнопкой для заполнения
+        if not all([birth_name, birth_date, birth_time, birth_place]):
+            logger.info(f"⚠️ Профиль пользователя {user_id} не заполнен полностью, отправляем сообщение для заполнения")
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="✅ *Оплата получена!*\n\n"
+                         "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
+                         "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                    ]]),
+                    parse_mode='Markdown'
+                )
+            except Exception as send_error:
+                logger.error(f"❌ Ошибка при отправке сообщения пользователю {user_id}: {send_error}", exc_info=True)
+            return
+        
+        # Профиль заполнен - запускаем генерацию автоматически
+        logger.info(f"✅ Профиль пользователя {user_id} заполнен, запускаем генерацию натальной карты автоматически")
+        await handle_natal_chart_request_from_payment(user_id, context)
+        
     except Exception as e:
         logger.error(f"❌ Ошибка при асинхронной обработке платежа: {e}", exc_info=True)
 
