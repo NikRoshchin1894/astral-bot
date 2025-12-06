@@ -2941,40 +2941,123 @@ async def check_and_process_pending_payment(user_id: int, context_or_application
 
 async def handle_natal_chart_request_from_payment(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Запускает генерацию натальной карты после успешной оплаты"""
-    # Создаем фиктивный query объект для вызова handle_natal_chart_request
-    from telegram import CallbackQuery, Message, Chat, User
-    
-    # Создаем минимальные объекты для вызова функции
-    fake_user = User(id=user_id, is_bot=False, first_name="User")
-    fake_chat = Chat(id=user_id, type='private')
-    fake_message = Message(
-        message_id=0,
-        date=datetime.now(),
-        chat=fake_chat,
-        from_user=fake_user
-    )
-    fake_query = CallbackQuery(
-        id=str(uuid.uuid4()),
-        from_user=fake_user,
-        message=fake_message,
-        data='natal_chart'
-    )
-    
-    # Вызываем обработчик генерации натальной карты
     try:
-        await handle_natal_chart_request(fake_query, context)
-    except Exception as e:
-        logger.error(f"❌ Ошибка при запуске генерации после оплаты: {e}", exc_info=True)
-        await context.bot.send_message(
+        # Загружаем данные пользователя из контекста или базы данных
+        user_data = context.user_data
+        if not user_data.get('birth_name'):
+            loaded_data = load_user_profile(user_id)
+            if loaded_data:
+                user_data.update(loaded_data)
+        
+        # Проверяем наличие всех необходимых данных
+        birth_name = user_data.get('birth_name')
+        birth_date = user_data.get('birth_date')
+        birth_time = user_data.get('birth_time')
+        birth_place = user_data.get('birth_place')
+        
+        if not all([birth_name, birth_date, birth_time, birth_place]):
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ *Оплата получена!*\n\n"
+                     "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
+                     "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]]),
+                parse_mode='Markdown'
+            )
+            return
+        
+        # Логируем начало генерации натальной карты
+        log_event(user_id, 'natal_chart_generation_start', {
+            'birth_date': birth_date,
+            'birth_time': birth_time,
+            'birth_place': birth_place,
+            'source': 'payment_auto'
+        })
+        
+        # Используем имя из профиля, если есть
+        if not birth_name:
+            birth_name = 'Пользователь'
+        
+        birth_data = {
+            'name': birth_name,
+            'date': birth_date,
+            'time': birth_time,
+            'place': birth_place
+        }
+        
+        # Проверяем наличие OpenAI ключа
+        openai_key = os.getenv('OPENAI_API_KEY')
+        if not openai_key:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="❌ *Ошибка настройки*\n\n"
+                     "API ключ OpenAI не настроен.\n"
+                     "Обратитесь к администратору бота.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]]),
+                parse_mode='Markdown'
+            )
+            return
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+            [InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support')]
+        ])
+        
+        # Отправляем сообщение о начале генерации и получаем message_id
+        status_message = await context.bot.send_message(
             chat_id=user_id,
             text="✅ *Оплата получена!*\n\n"
-                 "Для начала генерации натальной карты нажмите кнопку ниже:",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]]),
+                 "Создаём вашу натальную карту... Ожидайте ✨✨\n\n"
+                 "Обычно это занимает не более 5 минут.\n\n"
+                 "*Как подойти к чтению:*\n\n"
+                 "📖 *Читайте постепенно.*\n"
+                 "Не обязательно осваивать всё сразу — возвращайтесь к разделам по настроению или по запросу.\n\n"
+                 "🔍 *Замечайте повторяющиеся мотивы.*\n"
+                 "Они указывают на ваши главные темы и возможные точки трансформации.\n\n"
+                 "💭 *Сопоставляйте текст со своей реальностью.*\n"
+                 "Важно не просто прочитать, а увидеть, где это проявляется в вашей жизни.\n\n"
+                 "✍️ *Записывайте инсайты.*\n"
+                 "Мысли, эмоции, идеи — всё это помогает глубже интегрировать знания о себе.\n\n"
+                 "🔄 *Возвращайтесь к отчёту.*\n"
+                 "Натальная карта — живой инструмент. Она раскрывается по мере того, как вы открываетесь ей.\n\n"
+                 "Это пространство для себя.\n"
+                 "Для осознания.\n"
+                 "Для роста.",
+            reply_markup=keyboard,
             parse_mode='Markdown'
         )
+        
+        # Сохраняем информацию о генерации для отправки результата после завершения
+        active_generations[user_id] = {
+            'chat_id': status_message.chat_id,
+            'message_id': status_message.message_id,
+            'birth_data': birth_data,
+            'openai_key': openai_key
+        }
+        
+        # Запускаем генерацию в фоне
+        asyncio.create_task(generate_natal_chart_background(user_id, context))
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка при запуске генерации после оплаты: {e}", exc_info=True)
+        try:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ *Оплата получена!*\n\n"
+                     "Для начала генерации натальной карты нажмите кнопку ниже:",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]]),
+                parse_mode='Markdown'
+            )
+        except Exception as send_error:
+            logger.error(f"❌ Ошибка при отправке сообщения об ошибке: {send_error}", exc_info=True)
 
 
 def save_payment_info(user_id: int, yookassa_payment_id: str, internal_payment_id: str, amount: float):
