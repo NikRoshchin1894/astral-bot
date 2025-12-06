@@ -3040,8 +3040,22 @@ async def handle_natal_chart_request_from_payment(user_id: int, context: Context
             'openai_key': openai_key
         }
         
-        # Запускаем генерацию в фоне
-        asyncio.create_task(generate_natal_chart_background(user_id, context))
+        # Запускаем генерацию в фоне в отдельном потоке
+        # Это необходимо, так как process_payment_async вызывается из потока с временным event loop
+        def run_generation():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(generate_natal_chart_background(user_id, context))
+                finally:
+                    loop.close()
+            except Exception as gen_error:
+                logger.error(f"❌ Ошибка при запуске генерации в потоке: {gen_error}", exc_info=True)
+        
+        gen_thread = threading.Thread(target=run_generation, daemon=True)
+        gen_thread.start()
+        logger.info(f"🚀 Генерация натальной карты запущена в фоновом потоке для пользователя {user_id}")
         
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске генерации после оплаты: {e}", exc_info=True)
@@ -5125,7 +5139,13 @@ async def process_payment_async(user_id: int, application):
         
         # Профиль заполнен - запускаем генерацию автоматически
         logger.info(f"✅ Профиль пользователя {user_id} заполнен, запускаем генерацию натальной карты автоматически")
-        await handle_natal_chart_request_from_payment(user_id, context)
+        logger.info(f"   Данные профиля: name={birth_name}, date={birth_date}, time={birth_time}, place={birth_place}")
+        try:
+            await handle_natal_chart_request_from_payment(user_id, context)
+            logger.info(f"✅ Генерация натальной карты успешно запущена для пользователя {user_id}")
+        except Exception as gen_error:
+            logger.error(f"❌ Ошибка при запуске генерации для пользователя {user_id}: {gen_error}", exc_info=True)
+            raise
         
     except Exception as e:
         logger.error(f"❌ Ошибка при асинхронной обработке платежа: {e}", exc_info=True)
