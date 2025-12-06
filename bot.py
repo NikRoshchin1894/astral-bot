@@ -4957,7 +4957,7 @@ def create_webhook_app(application_instance):
                         
                         update_thread = threading.Thread(target=process_update_fallback, daemon=True)
                         update_thread.start()
-                    
+                
                     return jsonify({'status': 'ok'}), 200
                 else:
                     logger.warning("Не удалось создать объект Update из webhook данных")
@@ -5367,16 +5367,53 @@ def main():
                             except Exception as e:
                                 logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
                                 logger.warning("   Продолжаем работу - возможно webhook уже установлен")
-                        
+        
                         # Затем запускаем Application
                         logger.info("🚀 Запуск Application...")
                         await application.start()
                         logger.info("✅ Application запущен и готов обрабатывать обновления")
                         
-                        # Обновления обрабатываются напрямую в telegram_webhook через process_update()
+                        # Application автоматически обрабатывает обновления из update_queue
+                        # Запускаем обработку обновлений из очереди
+                        async def process_updates_from_queue():
+                            """Обрабатывает обновления из очереди Application"""
+                            while True:
+                                try:
+                                    # Получаем обновление из очереди (блокирующий вызов)
+                                    update = await application.update_queue.get()
+                                    
+                                    # Обрабатываем обновление
+                                    try:
+                                        await application.process_update(update)
+                                        logger.debug(f"✅ Обновление обработано из очереди: update_id={update.update_id}")
+                                    except Exception as process_error:
+                                        logger.error(f"❌ Ошибка при обработке обновления из очереди: {process_error}", exc_info=True)
+                                    
+                                    # Помечаем задачу как выполненную
+                                    application.update_queue.task_done()
+                                    
+                                except asyncio.CancelledError:
+                                    logger.info("🛑 Обработка обновлений остановлена")
+                                    break
+                                except Exception as e:
+                                    logger.error(f"❌ Ошибка в обработке очереди обновлений: {e}", exc_info=True)
+                                    await asyncio.sleep(1)  # Небольшая задержка при ошибке
+                        
+                        # Запускаем обработку обновлений в фоне
+                        update_task = asyncio.create_task(process_updates_from_queue())
                         
                         # Держим Application запущенным
-                        await asyncio.Event().wait()  # Ждем бесконечно
+                        try:
+                            await asyncio.Event().wait()  # Ждем бесконечно
+                        except asyncio.CancelledError:
+                            logger.info("🛑 Application получает сигнал остановки")
+                        finally:
+                            # Останавливаем обработку обновлений
+                            update_task.cancel()
+                            try:
+                                await update_task
+                            except asyncio.CancelledError:
+                                pass
                         
                     except Exception as e:
                         logger.error(f"❌ Ошибка при запуске Application: {e}", exc_info=True)
