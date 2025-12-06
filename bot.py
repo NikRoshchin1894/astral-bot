@@ -4825,8 +4825,6 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # Глобальная переменная для хранения application (нужна для webhook и проверки платежей)
 telegram_application = None
-# Очередь для передачи обновлений в поток обработки
-update_queue_for_processing = queue.Queue()
 
 
 def create_webhook_app(application_instance):
@@ -4840,16 +4838,43 @@ def create_webhook_app(application_instance):
         try:
             update_data = request.get_json()
             if update_data:
-                # Добавляем обновление в очередь для обработки
-                try:
-                    update_queue_for_processing.put_nowait(update_data)
-                    update_type = update_data.get('callback_query') and 'callback_query' or update_data.get('message') and 'message' or 'unknown'
-                    logger.info(f"📨 Обновление получено от Telegram: type={update_type}, добавлено в очередь")
+                # Создаем объект Update
+                update = Update.de_json(update_data, application_instance.bot)
+                if update:
+                    # Определяем тип обновления для логирования
+                    update_type = "unknown"
+                    if update.message:
+                        update_type = "message"
+                    elif update.callback_query:
+                        update_type = "callback_query"
+                    elif update.pre_checkout_query:
+                        update_type = "pre_checkout_query"
+                    
+                    logger.info(f"📨 Обновление получено от Telegram: type={update_type}, update_id={update.update_id}")
+                    
+                    # Обрабатываем обновление напрямую через Application в отдельном потоке
+                    def process_update():
+                        try:
+                            loop = asyncio.new_event_loop()
+                            asyncio.set_event_loop(loop)
+                            try:
+                                loop.run_until_complete(application_instance.process_update(update))
+                                logger.debug(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                            finally:
+                                loop.close()
+                        except Exception as process_error:
+                            logger.error(f"❌ Ошибка при обработке обновления: {process_error}", exc_info=True)
+                    
+                    # Запускаем обработку в отдельном потоке
+                    update_thread = threading.Thread(target=process_update, daemon=True)
+                    update_thread.start()
+                    
                     return jsonify({'status': 'ok'}), 200
-                except Exception as e:
-                    logger.error(f"❌ Ошибка при добавлении обновления в очередь: {e}", exc_info=True)
-                    return jsonify({'status': 'error', 'message': str(e)}), 500
+                else:
+                    logger.warning("Не удалось создать объект Update из webhook данных")
+                    return jsonify({'status': 'error', 'message': 'Invalid update'}), 400
             else:
+                logger.warning("Получен пустой webhook от Telegram")
                 return jsonify({'status': 'error', 'message': 'Empty request'}), 400
         except Exception as e:
             logger.error(f"❌ Ошибка при обработке webhook от Telegram: {e}", exc_info=True)
@@ -5217,40 +5242,7 @@ def main():
                         await application.start()
                         logger.info("✅ Application запущен и готов обрабатывать обновления")
                         
-                        # Запускаем обработку обновлений из нашей очереди
-                        async def process_updates():
-                            """Обрабатывает обновления из очереди и добавляет их в Application"""
-                            while True:
-                                try:
-                                    # Получаем обновление из нашей очереди
-                                    try:
-                                        update_data = update_queue_for_processing.get_nowait()
-                                        
-                                        # Создаем объект Update
-                                        update = Update.de_json(update_data, application.bot)
-                                        if update:
-                                            # Обрабатываем обновление напрямую через Application
-                                            try:
-                                                update_type = "callback_query" if update.callback_query else "message" if update.message else "unknown"
-                                                logger.info(f"📨 Обработка обновления: update_id={update.update_id}, type={update_type}")
-                                                await application.process_update(update)
-                                                logger.info(f"✅ Обновление успешно обработано: update_id={update.update_id}")
-                                            except Exception as process_error:
-                                                logger.error(f"❌ Ошибка при обработке обновления: {process_error}", exc_info=True)
-                                        
-                                        update_queue_for_processing.task_done()
-                                        
-                                    except queue.Empty:
-                                        # Нет обновлений, ждем немного
-                                        await asyncio.sleep(0.1)
-                                        continue
-                                    
-                                except Exception as e:
-                                    logger.error(f"❌ Ошибка при обработке обновления: {e}", exc_info=True)
-                                    await asyncio.sleep(1)
-                        
-                        # Запускаем обработку обновлений в фоне
-                        asyncio.create_task(process_updates())
+                        # Обновления обрабатываются напрямую в telegram_webhook через process_update()
                         
                         # Держим Application запущенным
                         await asyncio.Event().wait()  # Ждем бесконечно
