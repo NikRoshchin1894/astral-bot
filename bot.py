@@ -723,15 +723,112 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and len(context.args) > 0:
         start_param = context.args[0]
     
-    # Обработка возврата после оплаты
-    if start_param == 'payment_success':
-        # Проверяем, есть ли неоплаченные платежи для этого пользователя
+    # ВАЖНО: YooKassa всегда использует return_url (с payment_cancel) при возврате пользователя,
+    # даже если платеж успешен. Поэтому ВСЕГДА проверяем статус последнего платежа,
+    # независимо от параметра start_param
+    if start_param in ['payment_success', 'payment_cancel']:
+        logger.info(f"🔍 Пользователь {user_id} вернулся после оплаты (start_param={start_param}), проверяем статус платежа")
+        
+        # Сначала проверяем, есть ли неоплаченные или успешные платежи
         payment_processed = await check_and_process_pending_payment(user_id, context)
         if payment_processed:
             # Если платеж был обработан, показываем главное меню
+            logger.info(f"✅ Платеж для пользователя {user_id} успешно обработан")
             return
-        else:
-            # Если платеж еще не найден, отправляем сообщение
+        
+        # Если платеж не обработан автоматически, проверяем статус последнего платежа в базе
+        conn, db_type = get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Получаем информацию о последнем платеже
+            if db_type == 'postgresql':
+                cursor.execute('''
+                    SELECT yookassa_payment_id, status, created_at
+                    FROM payments
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (user_id,))
+            else:
+                cursor.execute('''
+                    SELECT yookassa_payment_id, status, created_at
+                    FROM payments
+                    WHERE user_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                ''', (user_id,))
+            
+            payment_info = cursor.fetchone()
+            
+            if payment_info:
+                payment_id = payment_info[0]
+                payment_status = payment_info[1]
+                logger.info(f"🔍 Найден платеж {payment_id} со статусом '{payment_status}' для пользователя {user_id}")
+                
+                # Если платеж успешен, обрабатываем его
+                if payment_status == 'succeeded':
+                    logger.info(f"✅ Платеж {payment_id} успешен в базе, обрабатываем его")
+                    conn.close()
+                    payment_processed = await check_and_process_pending_payment(user_id, context)
+                    if payment_processed:
+                        logger.info(f"✅ Платеж {payment_id} успешно обработан")
+                        return
+                    else:
+                        # Платеж успешен, но не обработан автоматически
+                        await update.message.reply_text(
+                            "✅ *Оплата получена!*\n\n"
+                            "Обрабатываю платеж... Пожалуйста, подождите немного. "
+                            "Если натальная карта не начнет генерироваться автоматически, нажмите кнопку ниже.",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                            ]]),
+                            parse_mode='Markdown'
+                        )
+                        return
+                
+                # Если платеж pending или canceled, проверяем через API
+                elif payment_status in ['pending', 'canceled']:
+                    logger.info(f"🔍 Платеж {payment_id} в статусе {payment_status}, проверяем через API")
+                    conn.close()
+                    try:
+                        payment_info_api = await check_yookassa_payment_status(payment_id)
+                        if payment_info_api:
+                            api_status = payment_info_api.get('status', payment_status)
+                            logger.info(f"🔍 Статус платежа через API: {api_status}")
+                            
+                            if api_status == 'succeeded':
+                                logger.info(f"✅ Платеж {payment_id} успешен при проверке через API, обновляем статус")
+                                update_payment_status(payment_id, 'succeeded', payment_info_api)
+                                mark_user_paid(user_id)
+                                payment_processed = await check_and_process_pending_payment(user_id, context)
+                                if payment_processed:
+                                    logger.info(f"✅ Платеж {payment_id} успешно обработан после проверки через API")
+                                    return
+                                else:
+                                    await update.message.reply_text(
+                                        "✅ *Оплата получена!*\n\n"
+                                        "Обрабатываю платеж... Пожалуйста, подождите немного.",
+                                        reply_markup=InlineKeyboardMarkup([[
+                                            InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                                        ]]),
+                                        parse_mode='Markdown'
+                                    )
+                                    return
+                    except Exception as e:
+                        logger.warning(f"⚠️ Не удалось проверить статус платежа через API: {e}")
+            
+            conn.close()
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при проверке статуса платежа: {e}")
+            if 'conn' in locals():
+                conn.close()
+        
+        # Если платеж не найден или не успешен, показываем соответствующее сообщение
+        if start_param == 'payment_success':
+            # Ожидался успешный платеж, но его нет
             await update.message.reply_text(
                 "✅ *Оплата получена!*\n\n"
                 "Обрабатываю платеж... Пожалуйста, подождите немного. "
@@ -743,8 +840,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
             return
+        elif start_param == 'payment_cancel':
+            # Показываем сообщение об отмене только если платеж действительно отменен
+            cancel_message = "❌ *Оплата отменена*\n\n"
+            cancel_message += "Вы можете попробовать оплатить позже или обратиться в поддержку, если проблема повторяется."
+            
+            await update.message.reply_text(
+                cancel_message,
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💳 Попробовать оплатить снова", callback_data='buy_natal_chart'),
+                    InlineKeyboardButton("💬 Поддержка", callback_data='support'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]]),
+                parse_mode='Markdown'
+            )
+            log_event(user_id, 'payment_cancel_return', {'start_param': start_param})
+            return
     
-    elif start_param == 'payment_cancel':
+    # Старый код для payment_cancel удален - теперь обрабатывается выше
         # Проверяем, есть ли информация о последнем платеже пользователя
         # ВАЖНО: Сначала проверяем, есть ли успешный платеж, даже если возврат через payment_cancel
         logger.info(f"🔍 Пользователь {user_id} вернулся через payment_cancel, проверяем статус платежа")
