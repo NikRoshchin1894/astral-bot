@@ -4935,22 +4935,28 @@ def create_webhook_app(application_instance):
                     
                     logger.info(f"📨 Обновление получено от Telegram: type={update_type}, update_id={update.update_id}")
                     
-                    # Обрабатываем обновление напрямую через Application в отдельном потоке
-                    def process_update():
-                        try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
+                    # Добавляем обновление в очередь Application для обработки в его собственном event loop
+                    # Это более надежный способ, чем создание нового event loop
+                    try:
+                        application_instance.update_queue.put_nowait(update)
+                        logger.debug(f"✅ Обновление добавлено в очередь: update_id={update.update_id}, type={update_type}")
+                    except Exception as queue_error:
+                        logger.error(f"❌ Ошибка при добавлении обновления в очередь: {queue_error}", exc_info=True)
+                        # Fallback: пытаемся обработать напрямую в отдельном потоке
+                        def process_update_fallback():
                             try:
-                                loop.run_until_complete(application_instance.process_update(update))
-                                logger.debug(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
-                            finally:
-                                loop.close()
-                        except Exception as process_error:
-                            logger.error(f"❌ Ошибка при обработке обновления: {process_error}", exc_info=True)
-                    
-                    # Запускаем обработку в отдельном потоке
-                    update_thread = threading.Thread(target=process_update, daemon=True)
-                    update_thread.start()
+                                loop = asyncio.new_event_loop()
+                                asyncio.set_event_loop(loop)
+                                try:
+                                    loop.run_until_complete(application_instance.process_update(update))
+                                    logger.debug(f"✅ Обновление обработано (fallback): update_id={update.update_id}, type={update_type}")
+                                finally:
+                                    loop.close()
+                            except Exception as process_error:
+                                logger.error(f"❌ Ошибка при обработке обновления (fallback): {process_error}", exc_info=True)
+                        
+                        update_thread = threading.Thread(target=process_update_fallback, daemon=True)
+                        update_thread.start()
                     
                     return jsonify({'status': 'ok'}), 200
                 else:
