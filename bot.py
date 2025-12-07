@@ -4935,6 +4935,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # Глобальная переменная для хранения application (нужна для webhook и проверки платежей)
 telegram_application = None
+# Событие для сигнализации о готовности Application
+application_ready_event = threading.Event()
 
 
 def create_webhook_app(application_instance):
@@ -4962,6 +4964,22 @@ def create_webhook_app(application_instance):
                     
                     logger.info(f"📨 Обновление получено от Telegram: type={update_type}, update_id={update.update_id}")
                     
+                    # Ждем, пока Application будет готов (максимум 10 секунд)
+                    # Это необходимо, чтобы не обрабатывать обновления до инициализации Application
+                    try:
+                        # Доступ к глобальной переменной через замыкание
+                        import sys
+                        bot_module = sys.modules.get('bot') or sys.modules.get('__main__')
+                        if bot_module and hasattr(bot_module, 'application_ready_event'):
+                            if not bot_module.application_ready_event.wait(timeout=10):
+                                logger.warning(f"⚠️ Application не готов после 10 секунд ожидания для update {update.update_id}")
+                        else:
+                            # Если событие еще не создано, ждем немного
+                            import time
+                            time.sleep(1)
+                    except Exception as wait_error:
+                        logger.warning(f"⚠️ Ошибка при ожидании готовности Application: {wait_error}")
+                    
                     # Обрабатываем обновление напрямую через Application в отдельном потоке
                     # Это более надежный способ - каждый update обрабатывается в своем event loop
                     def process_update():
@@ -4970,7 +4988,6 @@ def create_webhook_app(application_instance):
                             asyncio.set_event_loop(loop)
                             try:
                                 # Обрабатываем обновление через Application
-                                # Application должен быть инициализирован и запущен к этому моменту
                                 loop.run_until_complete(application_instance.process_update(update))
                                 logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
                             except Exception as process_error:
@@ -5411,8 +5428,12 @@ def main():
                         logger.info("✅ Application запущен и готов обрабатывать обновления")
                         
                         # Обновляем глобальную переменную для доступа из webhook handler
-                        global telegram_application
+                        global telegram_application, application_ready_event
                         telegram_application = application
+                        
+                        # Сигнализируем, что Application готов к обработке обновлений
+                        application_ready_event.set()
+                        logger.info("✅ Application готов к обработке обновлений")
                         
                         # Обновления обрабатываются напрямую в telegram_webhook через process_update()
                         # в отдельных потоках с собственными event loops
