@@ -987,7 +987,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 Просто используйте кнопки меню для навигации!'''
     
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+        [InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support')]
+    ])
+    
+    await update.message.reply_text(help_text, reply_markup=keyboard, parse_mode='Markdown')
 
 
 async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
