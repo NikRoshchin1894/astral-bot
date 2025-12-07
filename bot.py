@@ -4201,18 +4201,26 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
     # Обработка редактирования полей
     elif state == 'edit_name':
         user_id = update.message.from_user.id
-        user_data['birth_name'] = text
-        user_data.pop('natal_chart_state', None)
+        logger.info(f"✏️ Редактирование имени для пользователя {user_id}: '{text}'")
         
-        # Сохраняем профиль
+        # Сохраняем имя в user_data
+        user_data['birth_name'] = text
+        # НЕ удаляем natal_chart_state здесь - удалим после успешного показа профиля
+        
+        # Сохраняем профиль в базу
         try:
             save_user_profile(user_id, user_data)
-            log_event(user_id, 'profile_field_edited', {'field': 'name'})
-            logger.info(f"✅ Имя пользователя {user_id} успешно сохранено: {text}")
+            log_event(user_id, 'profile_field_edited', {'field': 'name', 'value': text})
+            logger.info(f"✅ Имя пользователя {user_id} успешно сохранено в БД: {text}")
         except Exception as save_error:
             logger.error(f"❌ Ошибка при сохранении имени пользователя {user_id}: {save_error}", exc_info=True)
+            # Продолжаем, даже если сохранение не удалось
         
-        # Показываем профиль
+        # Удаляем состояние после успешного сохранения
+        user_data.pop('natal_chart_state', None)
+        
+        # Показываем профиль с обновленными данными
+        logger.info(f"📤 Показ профиля пользователю {user_id} после редактирования имени. user_data: {user_data}")
         try:
             await show_profile_message(update, user_data)
             logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени")
@@ -4228,6 +4236,7 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
                         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
                     ]])
                 )
+                logger.info(f"✅ Отправлено fallback сообщение пользователю {user_id}")
             except Exception as fallback_error:
                 logger.error(f"❌ Критическая ошибка: не удалось отправить сообщение пользователю {user_id}: {fallback_error}", exc_info=True)
     
