@@ -1050,7 +1050,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id if query.from_user else None
     data = query.data
     
-    logger.info(f"🔘 Обработка нажатия кнопки: {data} от пользователя {user_id}")
+    logger.debug(f"🔘 Обработка нажатия кнопки: {data} от пользователя {user_id}")
     
     # Отвечаем на callback query как можно раньше
     # Обрабатываем ошибку, если query уже истек (старые запросы)
@@ -1467,15 +1467,39 @@ async def my_profile(query, context):
     user_id = query.from_user.id
     
     # Логируем просмотр профиля
-    log_event(user_id, 'profile_viewed', {})
+    try:
+        log_event(user_id, 'profile_viewed', {})
+    except:
+        pass
+    
+    # Загружаем данные из базы, если их нет в context.user_data
     user_data = context.user_data
     
-    profile_text, keyboard = get_profile_message_and_buttons(user_id, user_data)
-    await query.edit_message_text(
-        profile_text,
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
+    # Если в user_data нет данных профиля, загружаем из базы
+    if not user_data or not any(key.startswith('birth_') for key in user_data.keys()):
+        try:
+            loaded_data = load_user_profile(user_id)
+            if loaded_data:
+                # Обновляем context.user_data данными из базы
+                user_data.update(loaded_data)
+                context.user_data.update(loaded_data)
+        except Exception as load_error:
+            logger.warning(f"⚠️ Ошибка при загрузке профиля пользователя {user_id} в my_profile: {load_error}")
+    
+    try:
+        profile_text, keyboard = get_profile_message_and_buttons(user_id, user_data)
+        await query.edit_message_text(
+            profile_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+    except Exception as e:
+        logger.error(f"❌ Ошибка при показе профиля пользователю {user_id}: {e}", exc_info=True)
+        # Пытаемся отправить простое сообщение
+        try:
+            await query.answer("Ошибка при загрузке профиля. Попробуйте позже.", show_alert=True)
+        except:
+            pass
 
 
 async def show_profile_message(update, user_data):
@@ -5432,44 +5456,24 @@ def create_webhook_app(application_instance):
                     elif update.pre_checkout_query:
                         update_type = "pre_checkout_query"
                     
-                    logger.info(f"📨 Обновление получено от Telegram: type={update_type}, update_id={update.update_id}")
+                    logger.debug(f"📨 Обновление получено от Telegram: type={update_type}, update_id={update.update_id}")
                     
-                    # Дополнительная информация о сообщении
-                    if update.message:
-                        logger.info(f"   📝 Текст сообщения: {update.message.text}")
-                        logger.info(f"   👤 От пользователя: {update.message.from_user.id} (@{update.message.from_user.username})")
-                        if update.message.entities:
-                            logger.info(f"   📋 Сущности в сообщении: {[e.type for e in update.message.entities]}")
-                    
-                    # Ждем, пока Application будет готов (максимум 5 секунд)
+                    # Ждем, пока Application будет готов (максимум 3 секунды)
                     try:
                         import sys
                         bot_module = sys.modules.get('bot') or sys.modules.get('__main__')
                         if bot_module and hasattr(bot_module, 'application_ready_event'):
-                            logger.info(f"   ⏳ Ожидание готовности Application...")
-                            if not bot_module.application_ready_event.wait(timeout=5):
-                                logger.warning(f"⚠️ Application не готов после 5 секунд ожидания для update {update.update_id}, обрабатываем без ожидания")
-                            else:
-                                logger.info(f"   ✅ Application готов к обработке")
+                            if not bot_module.application_ready_event.wait(timeout=3):
+                                logger.warning(f"⚠️ Application не готов после 3 секунд для update {update.update_id}, обрабатываем без ожидания")
                         else:
-                            logger.warning(f"⚠️ application_ready_event не найден, обрабатываем без ожидания")
+                            logger.debug(f"application_ready_event не найден, обрабатываем без ожидания")
                     except Exception as wait_error:
-                        logger.warning(f"⚠️ Ошибка при ожидании готовности Application: {wait_error}")
-                    
-                    # Проверяем, что Application инициализирован
-                    if not hasattr(application_instance, 'initialized') or not application_instance.initialized:
-                        logger.warning(f"⚠️ Application не инициализирован, но продолжаем обработку")
-                    else:
-                        logger.info(f"   ✅ Application инициализирован")
-                    
-                    # Проверяем, что обработчики зарегистрированы
-                    handlers_count = len(application_instance.handlers[0]) if hasattr(application_instance, 'handlers') and application_instance.handlers else 0
-                    logger.info(f"   📋 Зарегистрировано обработчиков: {handlers_count}")
+                        logger.debug(f"Ошибка при ожидании готовности Application: {wait_error}")
                     
                     # Обрабатываем обновление через Application
                     # Используем asyncio для обработки в правильном event loop
                     try:
-                        logger.info(f"   🔄 Начало обработки update {update.update_id} через process_update()...")
+                        logger.debug(f"Обработка update {update.update_id} через process_update()...")
                         
                         # Пытаемся получить event loop Application
                         app_loop = None
@@ -5482,9 +5486,8 @@ def create_webhook_app(application_instance):
                         except:
                             pass
                         
-                        if app_loop and app_loop.is_running():
+                        if app_loop and app_loop.is_running() and not app_loop.is_closed():
                             # Если есть работающий event loop, используем его
-                            logger.info(f"   ✅ Используем event loop Application для обработки")
                             future = asyncio.run_coroutine_threadsafe(
                                 application_instance.process_update(update),
                                 app_loop
@@ -5492,12 +5495,12 @@ def create_webhook_app(application_instance):
                             # Ждем завершения обработки (максимум 30 секунд)
                             try:
                                 future.result(timeout=30)
-                                logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                                logger.debug(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
                             except Exception as future_error:
                                 logger.error(f"❌ Ошибка при ожидании обработки обновления {update.update_id}: {future_error}", exc_info=True)
                         else:
                             # Если нет работающего loop, создаем новый
-                            logger.info(f"   ⚠️ Event loop Application недоступен, создаем новый")
+                            logger.debug(f"Event loop Application недоступен, создаем новый")
                             def process_update():
                                 try:
                                     loop = asyncio.new_event_loop()
@@ -5505,7 +5508,7 @@ def create_webhook_app(application_instance):
                                     try:
                                         # Обрабатываем обновление через Application
                                         loop.run_until_complete(application_instance.process_update(update))
-                                        logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                                        logger.debug(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
                                     except Exception as process_error:
                                         logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True)
                                     finally:
