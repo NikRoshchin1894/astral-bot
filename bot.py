@@ -2939,6 +2939,63 @@ async def check_and_process_pending_payment(user_id: int, context_or_application
 
 async def handle_natal_chart_request_from_payment(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Запускает генерацию натальной карты после успешной оплаты"""
+    # Проверяем, не запущена ли уже генерация для этого пользователя
+    if user_id in active_generations:
+        logger.warning(f"⚠️ Генерация для пользователя {user_id} уже запущена, пропускаем дублирующий запрос")
+        return
+    
+    # Проверяем по базе данных - не началась ли генерация только что
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # Получаем последнюю незавершенную генерацию (за последние 2 минуты)
+        if db_type == 'postgresql':
+            cursor.execute('''
+                SELECT e1.timestamp 
+                FROM events e1
+                WHERE e1.user_id = %s 
+                AND e1.event_type = 'natal_chart_generation_start'
+                AND e1.timestamp > NOW() - INTERVAL '2 minutes'
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM events e2 
+                    WHERE e2.user_id = %s 
+                    AND e2.event_type IN ('natal_chart_success', 'natal_chart_error')
+                    AND e2.timestamp > e1.timestamp
+                )
+                ORDER BY e1.timestamp DESC
+                LIMIT 1
+            ''', (user_id, user_id))
+        else:
+            # SQLite - проверяем последние 2 минуты
+            two_minutes_ago = (datetime.now() - timedelta(minutes=2)).isoformat()
+            cursor.execute('''
+                SELECT e1.timestamp 
+                FROM events e1
+                WHERE e1.user_id = ? 
+                AND e1.event_type = 'natal_chart_generation_start'
+                AND e1.timestamp > ?
+                AND NOT EXISTS (
+                    SELECT 1 
+                    FROM events e2 
+                    WHERE e2.user_id = ? 
+                    AND e2.event_type IN ('natal_chart_success', 'natal_chart_error')
+                    AND e2.timestamp > e1.timestamp
+                )
+                ORDER BY e1.timestamp DESC
+                LIMIT 1
+            ''', (user_id, two_minutes_ago, user_id))
+        
+        recent_generation = cursor.fetchone()
+        if recent_generation:
+            logger.warning(f"⚠️ Обнаружена недавно начатая генерация для пользователя {user_id} (в последние 2 минуты), пропускаем дублирующий запрос")
+            conn.close()
+            return
+    except Exception as check_error:
+        logger.warning(f"⚠️ Ошибка при проверке дублирующей генерации: {check_error}")
+    finally:
+        conn.close()
+    
     # Получаем bot token для создания нового bot в новом event loop
     bot_token = None
     if hasattr(context, 'bot') and context.bot:
