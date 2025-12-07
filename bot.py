@@ -4262,7 +4262,13 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             )
             logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени")
         except Exception as show_error:
+            error_str = str(show_error)
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Проверяем, не является ли ошибка связанной с закрытым event loop
+            if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                logger.warning(f"⚠️ Event loop закрыт, пропускаем повторную попытку отправки для пользователя {user_id}")
+                # Не пытаемся делать еще один await, так как event loop закрыт
+                return
             # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
             try:
                 loaded_data = load_user_profile(user_id)
@@ -4284,7 +4290,12 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
                         ]])
                     )
             except Exception as fallback_error:
+                fallback_error_str = str(fallback_error)
                 logger.error(f"❌ Критическая ошибка: не удалось отправить сообщение пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Проверяем, не является ли ошибка связанной с закрытым event loop
+                if 'Event loop is closed' in fallback_error_str or 'event loop is closed' in fallback_error_str.lower():
+                    logger.warning(f"⚠️ Event loop закрыт в fallback, пропускаем отправку для пользователя {user_id}")
+                    return
                 # Последняя попытка - просто сообщение
                 try:
                     await update.message.reply_text(
@@ -4317,7 +4328,12 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         try:
             await show_profile_message(update, user_data)
         except Exception as show_error:
+            error_str = str(show_error)
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Проверяем, не является ли ошибка связанной с закрытым event loop
+            if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                logger.warning(f"⚠️ Event loop закрыт, пропускаем повторную попытку отправки для пользователя {user_id}")
+                return
             # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
             try:
                 loaded_data = load_user_profile(user_id)
@@ -4339,7 +4355,12 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
                         ]])
                     )
             except Exception as fallback_error:
+                fallback_error_str = str(fallback_error)
                 logger.error(f"❌ Критическая ошибка при показе профиля пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Проверяем, не является ли ошибка связанной с закрытым event loop
+                if 'Event loop is closed' in fallback_error_str or 'event loop is closed' in fallback_error_str.lower():
+                    logger.warning(f"⚠️ Event loop закрыт в fallback, пропускаем отправку для пользователя {user_id}")
+                    return
                 # Последняя попытка - просто сообщение
                 try:
                     await update.message.reply_text(
@@ -4372,7 +4393,12 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         try:
             await show_profile_message(update, user_data)
         except Exception as show_error:
+            error_str = str(show_error)
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Проверяем, не является ли ошибка связанной с закрытым event loop
+            if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                logger.warning(f"⚠️ Event loop закрыт, пропускаем повторную попытку отправки для пользователя {user_id}")
+                return
             # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
             try:
                 loaded_data = load_user_profile(user_id)
@@ -4394,7 +4420,12 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
                         ]])
                     )
             except Exception as fallback_error:
+                fallback_error_str = str(fallback_error)
                 logger.error(f"❌ Критическая ошибка при показе профиля пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Проверяем, не является ли ошибка связанной с закрытым event loop
+                if 'Event loop is closed' in fallback_error_str or 'event loop is closed' in fallback_error_str.lower():
+                    logger.warning(f"⚠️ Event loop закрыт в fallback, пропускаем отправку для пользователя {user_id}")
+                    return
                 # Последняя попытка - просто сообщение
                 try:
                     await update.message.reply_text(
@@ -4427,7 +4458,12 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         try:
             await show_profile_message(update, user_data)
         except Exception as show_error:
+            error_str = str(show_error)
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Проверяем, не является ли ошибка связанной с закрытым event loop
+            if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                logger.warning(f"⚠️ Event loop закрыт, пропускаем повторную попытку отправки для пользователя {user_id}")
+                return
             # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
             try:
                 loaded_data = load_user_profile(user_id)
@@ -4449,7 +4485,12 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
                         ]])
                     )
             except Exception as fallback_error:
+                fallback_error_str = str(fallback_error)
                 logger.error(f"❌ Критическая ошибка при показе профиля пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Проверяем, не является ли ошибка связанной с закрытым event loop
+                if 'Event loop is closed' in fallback_error_str or 'event loop is closed' in fallback_error_str.lower():
+                    logger.warning(f"⚠️ Event loop закрыт в fallback, пропускаем отправку для пользователя {user_id}")
+                    return
                 # Последняя попытка - просто сообщение
                 try:
                     await update.message.reply_text(
