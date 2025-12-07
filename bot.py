@@ -4278,7 +4278,18 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         save_user_profile(user_id, user_data)
         log_event(user_id, 'profile_field_edited', {'field': 'date'})
         # Сразу показываем профиль вместо сообщения об успехе
-        await show_profile_message(update, user_data)
+        try:
+            await show_profile_message(update, user_data)
+        except Exception as show_error:
+            logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Если не удалось показать профиль, показываем главное меню
+            await update.message.reply_text(
+                "Профиль обновлен.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]])
+            )
     
     elif state == 'edit_time':
         user_id = update.message.from_user.id
@@ -4297,7 +4308,18 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         save_user_profile(user_id, user_data)
         log_event(user_id, 'profile_field_edited', {'field': 'time'})
         # Сразу показываем профиль вместо сообщения об успехе
-        await show_profile_message(update, user_data)
+        try:
+            await show_profile_message(update, user_data)
+        except Exception as show_error:
+            logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Если не удалось показать профиль, показываем главное меню
+            await update.message.reply_text(
+                "Профиль обновлен.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]])
+            )
     
     elif state == 'edit_place':
         user_id = update.message.from_user.id
@@ -4316,7 +4338,18 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         save_user_profile(user_id, user_data)
         log_event(user_id, 'profile_field_edited', {'field': 'place'})
         # Сразу показываем профиль вместо сообщения об успехе
-        await show_profile_message(update, user_data)
+        try:
+            await show_profile_message(update, user_data)
+        except Exception as show_error:
+            logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Если не удалось показать профиль, показываем главное меню
+            await update.message.reply_text(
+                "Профиль обновлен.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                ]])
+            )
 
 
 def get_coordinates_from_place(place_str: str) -> Tuple[Optional[float], Optional[float]]:
