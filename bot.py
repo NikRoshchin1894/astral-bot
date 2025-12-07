@@ -4964,24 +4964,17 @@ def create_webhook_app(application_instance):
                     
                     logger.info(f"📨 Обновление получено от Telegram: type={update_type}, update_id={update.update_id}")
                     
-                    # Ждем, пока Application будет готов (максимум 10 секунд)
-                    # Это необходимо, чтобы не обрабатывать обновления до инициализации Application
+                    # Ждем, пока Application будет готов (максимум 5 секунд)
                     try:
-                        # Доступ к глобальной переменной через замыкание
                         import sys
                         bot_module = sys.modules.get('bot') or sys.modules.get('__main__')
                         if bot_module and hasattr(bot_module, 'application_ready_event'):
-                            if not bot_module.application_ready_event.wait(timeout=10):
-                                logger.warning(f"⚠️ Application не готов после 10 секунд ожидания для update {update.update_id}")
-                        else:
-                            # Если событие еще не создано, ждем немного
-                            import time
-                            time.sleep(1)
+                            if not bot_module.application_ready_event.wait(timeout=5):
+                                logger.warning(f"⚠️ Application не готов после 5 секунд ожидания для update {update.update_id}, обрабатываем без ожидания")
                     except Exception as wait_error:
                         logger.warning(f"⚠️ Ошибка при ожидании готовности Application: {wait_error}")
                     
                     # Обрабатываем обновление напрямую через Application в отдельном потоке
-                    # Это более надежный способ - каждый update обрабатывается в своем event loop
                     def process_update():
                         try:
                             loop = asyncio.new_event_loop()
@@ -4993,7 +4986,6 @@ def create_webhook_app(application_instance):
                             except Exception as process_error:
                                 logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True)
                             finally:
-                                # Закрываем loop после обработки
                                 try:
                                     loop.close()
                                 except Exception as close_error:
@@ -5004,7 +4996,6 @@ def create_webhook_app(application_instance):
                     # Запускаем обработку в отдельном потоке
                     update_thread = threading.Thread(target=process_update, daemon=True)
                     update_thread.start()
-                    logger.debug(f"🔄 Поток обработки обновления {update.update_id} запущен")
                 
                     return jsonify({'status': 'ok'}), 200
                 else:
