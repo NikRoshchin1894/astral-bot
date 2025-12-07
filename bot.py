@@ -1517,7 +1517,6 @@ async def start_payment_process(query, context):
         
         await query.message.reply_text(
             f"*Оплата натальной карты*\n\n"
-            f"Стоимость: *{NATAL_CHART_PRICE_RUB} ₽*\n\n"
             f"Нажмите кнопку ниже, чтобы перейти к оплате.\n\n"
             f"*После оплаты сразу приступлю к подготовке отчета!*✨",
             reply_markup=payment_keyboard,
