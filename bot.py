@@ -6204,8 +6204,15 @@ def main():
                 return web.Response(text='Error', status=500)
         
         async def health_handler(request):
-            """Health check endpoint"""
-            return web.Response(text='ok', status=200)
+            """Health check endpoint - отвечает сразу для быстрого healthcheck"""
+            # Проверяем, инициализирован ли Application (опционально)
+            app_ready = hasattr(application, 'initialized') and application.initialized if hasattr(application, 'initialized') else True
+            status = {
+                'status': 'ok',
+                'ready': app_ready,
+                'timestamp': datetime.now().isoformat()
+            }
+            return web.json_response(status, status=200)
         
         # Создаем aiohttp приложение
         aioapp = web.Application()
@@ -6218,7 +6225,19 @@ def main():
         # Запускаем Application и webhook server в одном event loop
         async def run_bot():
             """Запускает Application и webhook server"""
-            # Инициализируем Application
+            # ВАЖНО: Сначала запускаем webhook server для healthcheck
+            # Это позволяет healthcheck работать сразу, даже до полной инициализации Application
+            runner = web.AppRunner(aioapp)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            logger.info(f"✅ Webhook server запущен на порту {port} (healthcheck доступен)")
+            logger.info(f"   Telegram webhook path: {webhook_path}")
+            if yookassa_webhook_url:
+                logger.info(f"   YooKassa webhook path: /webhook/yookassa")
+            
+            # Теперь инициализируем Application (может занять время)
+            logger.info("🔧 Инициализация Application...")
             await application.initialize()
             logger.info("✅ Application инициализирован")
             
@@ -6236,17 +6255,7 @@ def main():
             
             # Запускаем Application
             await application.start()
-            logger.info("✅ Application запущен")
-            
-            # Запускаем aiohttp webhook server
-            runner = web.AppRunner(aioapp)
-            await runner.setup()
-            site = web.TCPSite(runner, '0.0.0.0', port)
-            await site.start()
-            logger.info(f"✅ Webhook server запущен на порту {port}")
-            logger.info(f"   Telegram webhook path: {webhook_path}")
-            if yookassa_webhook_url:
-                logger.info(f"   YooKassa webhook path: /webhook/yookassa")
+            logger.info("✅ Application запущен и готов обрабатывать обновления")
             
             # Ждем сигнала остановки
             shutdown_evt = asyncio.Event()

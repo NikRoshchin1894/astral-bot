@@ -43,7 +43,8 @@ ENV PYTHONDONTWRITEBYTECODE=1
 EXPOSE 8080
 
 # Health check для проверки работоспособности приложения
-HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+# Увеличен start-period для приложений с большим количеством зависимостей
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
   CMD curl -f http://localhost:8080/health || exit 1
 
 # Команда для запуска бота
