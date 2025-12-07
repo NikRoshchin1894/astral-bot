@@ -5960,10 +5960,8 @@ def main():
         # Сохраняем ссылку на application (уже объявлено в начале функции)
         telegram_application = application
         
-        # Регистрируем обработчики сигналов
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
-        atexit.register(cleanup_bot)
+        # Обработчики сигналов будут зарегистрированы в asyncio.run()
+        # atexit.register не нужен, т.к. shutdown обрабатывается в run_bot()
         
         # Создаем async webhook server на aiohttp для обработки Telegram и YooKassa
         async def telegram_webhook_handler(request):
@@ -6048,14 +6046,16 @@ def main():
         
         # Запускаем Application и webhook server в одном event loop
         async def run_bot():
-            """Запускает Application и webhook server"""
+            """Запускает Application и webhook server в одном event loop"""
+            logger.info("🚀 Запуск бота в упрощенной архитектуре (один event loop, aiohttp)")
+            
             # ВАЖНО: Сначала запускаем webhook server для healthcheck
             # Это позволяет healthcheck работать сразу, даже до полной инициализации Application
             runner = web.AppRunner(aioapp)
             await runner.setup()
             site = web.TCPSite(runner, '0.0.0.0', port)
             await site.start()
-            logger.info(f"✅ Webhook server запущен на порту {port} (healthcheck доступен)")
+            logger.info(f"✅ Webhook server (aiohttp) запущен на порту {port} (healthcheck доступен)")
             logger.info(f"   Telegram webhook path: {webhook_path}")
             if yookassa_webhook_url:
                 logger.info(f"   YooKassa webhook path: /webhook/yookassa")
@@ -6091,18 +6091,62 @@ def main():
             asyncio.create_task(check_shutdown())
             await shutdown_evt.wait()
             
-            # Останавливаем
-            await site.stop()
-            await runner.cleanup()
-            await application.stop()
-            await application.shutdown()
+            # Останавливаем в правильном порядке
+            logger.info("🛑 Начало остановки компонентов...")
+            
+            # Сначала останавливаем webhook server
+            try:
+                await site.stop()
+                logger.info("✅ Webhook server остановлен")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при остановке webhook server: {e}")
+            
+            try:
+                await runner.cleanup()
+                logger.info("✅ AppRunner очищен")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при очистке AppRunner: {e}")
+            
+            # Затем останавливаем Application
+            try:
+                if hasattr(application, 'running') and application.running:
+                    await application.stop()
+                    logger.info("✅ Application остановлен")
+            except Exception as e:
+                error_str = str(e)
+                if 'different loop' in error_str.lower() or 'event loop is closed' in error_str.lower():
+                    logger.warning(f"⚠️ Event loop уже закрыт, пропускаем остановку Application")
+                else:
+                    logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
+            
+            try:
+                await application.shutdown()
+                logger.info("✅ Application завершен")
+            except Exception as e:
+                error_str = str(e)
+                if 'different loop' in error_str.lower() or 'event loop is closed' in error_str.lower():
+                    logger.warning(f"⚠️ Event loop уже закрыт, пропускаем shutdown Application")
+                else:
+                    logger.warning(f"⚠️ Ошибка при shutdown Application: {e}")
         
         # Запускаем в event loop
         try:
+            # Регистрируем обработчики сигналов перед запуском
+            def signal_handler_async(signum, frame):
+                """Обработчик сигналов для async контекста"""
+                logger.info(f"📡 Получен сигнал {signum}, устанавливаем флаг остановки...")
+                shutdown_event.set()
+            
+            signal.signal(signal.SIGTERM, signal_handler_async)
+            signal.signal(signal.SIGINT, signal_handler_async)
+            
             asyncio.run(run_bot())
         except KeyboardInterrupt:
             logger.info("📡 Получен KeyboardInterrupt, завершаем работу...")
             shutdown_event.set()
+        except Exception as e:
+            logger.error(f"❌ Критическая ошибка при запуске бота: {e}", exc_info=True)
+            raise
     else:
         # Режим POLLING (для разработки/тестирования)
         logger.info("🔄 Запуск бота в режиме POLLING")
