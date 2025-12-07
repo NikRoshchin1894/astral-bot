@@ -712,8 +712,10 @@ def reset_user_payment(user_id: int):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
+    logger.info("🔵 ФУНКЦИЯ start() ВЫЗВАНА!")
     user = update.effective_user
     user_id = user.id
+    logger.info(f"🔵 Обработка команды /start для пользователя {user_id} (username: {user.username})")
     
     # Сохраняем username в базу данных
     save_user_username(user_id, user.username, user.first_name)
@@ -5187,15 +5189,37 @@ def create_webhook_app(application_instance):
                     
                     logger.info(f"📨 Обновление получено от Telegram: type={update_type}, update_id={update.update_id}")
                     
+                    # Дополнительная информация о сообщении
+                    if update.message:
+                        logger.info(f"   📝 Текст сообщения: {update.message.text}")
+                        logger.info(f"   👤 От пользователя: {update.message.from_user.id} (@{update.message.from_user.username})")
+                        if update.message.entities:
+                            logger.info(f"   📋 Сущности в сообщении: {[e.type for e in update.message.entities]}")
+                    
                     # Ждем, пока Application будет готов (максимум 5 секунд)
                     try:
                         import sys
                         bot_module = sys.modules.get('bot') or sys.modules.get('__main__')
                         if bot_module and hasattr(bot_module, 'application_ready_event'):
+                            logger.info(f"   ⏳ Ожидание готовности Application...")
                             if not bot_module.application_ready_event.wait(timeout=5):
                                 logger.warning(f"⚠️ Application не готов после 5 секунд ожидания для update {update.update_id}, обрабатываем без ожидания")
+                            else:
+                                logger.info(f"   ✅ Application готов к обработке")
+                        else:
+                            logger.warning(f"⚠️ application_ready_event не найден, обрабатываем без ожидания")
                     except Exception as wait_error:
                         logger.warning(f"⚠️ Ошибка при ожидании готовности Application: {wait_error}")
+                    
+                    # Проверяем, что Application инициализирован
+                    if not hasattr(application_instance, 'initialized') or not application_instance.initialized:
+                        logger.warning(f"⚠️ Application не инициализирован, но продолжаем обработку")
+                    else:
+                        logger.info(f"   ✅ Application инициализирован")
+                    
+                    # Проверяем, что обработчики зарегистрированы
+                    handlers_count = len(application_instance.handlers[0]) if hasattr(application_instance, 'handlers') and application_instance.handlers else 0
+                    logger.info(f"   📋 Зарегистрировано обработчиков: {handlers_count}")
                     
                     # Обрабатываем обновление напрямую через Application в отдельном потоке
                     def process_update():
@@ -5203,6 +5227,7 @@ def create_webhook_app(application_instance):
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
                             try:
+                                logger.info(f"   🔄 Начало обработки update {update.update_id} через process_update()...")
                                 # Обрабатываем обновление через Application
                                 loop.run_until_complete(application_instance.process_update(update))
                                 logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
