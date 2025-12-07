@@ -4241,14 +4241,29 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         # Удаляем состояние после успешного сохранения
         user_data.pop('natal_chart_state', None)
         
-        # Показываем профиль с обновленными данными
+        # Загружаем полный профиль из базы, чтобы показать все данные
+        try:
+            loaded_data = load_user_profile(user_id)
+            if loaded_data:
+                # Объединяем: сначала данные из базы, потом переданные (переданные имеют приоритет)
+                user_data = {**loaded_data, **user_data}
+        except Exception as load_error:
+            logger.warning(f"⚠️ Ошибка при загрузке профиля пользователя {user_id} из базы: {load_error}")
+            # Продолжаем с переданными данными
+        
+        # Показываем профиль с обновленными данными напрямую
         logger.info(f"📤 Показ профиля пользователю {user_id} после редактирования имени. user_data: {user_data}")
         try:
-            await show_profile_message(update, user_data)
+            profile_text, keyboard = get_profile_message_and_buttons(user_id, user_data)
+            await update.message.reply_text(
+                profile_text,
+                reply_markup=keyboard,
+                parse_mode='Markdown'
+            )
             logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени")
         except Exception as show_error:
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
-            # Если не удалось показать профиль, показываем главное меню
+            # Если не удалось показать профиль, показываем сообщение с кнопкой для просмотра профиля
             try:
                 await update.message.reply_text(
                     "Профиль обновлен.",
@@ -4257,7 +4272,6 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
                         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
                     ]])
                 )
-                logger.info(f"✅ Отправлено fallback сообщение пользователю {user_id}")
             except Exception as fallback_error:
                 logger.error(f"❌ Критическая ошибка: не удалось отправить сообщение пользователю {user_id}: {fallback_error}", exc_info=True)
     
