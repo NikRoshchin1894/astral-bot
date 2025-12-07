@@ -4162,13 +4162,41 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
     
     # Обработка редактирования полей
     elif state == 'edit_name':
+        user_id = update.message.from_user.id
         user_data['birth_name'] = text
         user_data.pop('natal_chart_state', None)
-        user_id = update.message.from_user.id
-        save_user_profile(user_id, user_data)
-        log_event(user_id, 'profile_field_edited', {'field': 'name'})
-        # Сразу показываем профиль вместо сообщения об успехе
-        await show_profile_message(update, user_data)
+        
+        # Сохраняем профиль
+        try:
+            save_user_profile(user_id, user_data)
+            log_event(user_id, 'profile_field_edited', {'field': 'name'})
+            logger.info(f"✅ Имя пользователя {user_id} успешно сохранено: {text}")
+        except Exception as save_error:
+            logger.error(f"❌ Ошибка при сохранении имени пользователя {user_id}: {save_error}", exc_info=True)
+        
+        # Показываем профиль
+        try:
+            # Обновляем user_data из базы, чтобы получить актуальные данные
+            loaded_data = load_user_profile(user_id)
+            if loaded_data:
+                user_data.update(loaded_data)
+            
+            await show_profile_message(update, user_data)
+            logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени")
+        except Exception as show_error:
+            logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
+            # Отправляем простое сообщение об успехе, если не удалось показать профиль
+            try:
+                await update.message.reply_text(
+                    f"✅ Имя успешно сохранено: {text}\n\n"
+                    "Профиль обновлен. Используйте кнопки меню для дальнейших действий.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                    ]])
+                )
+            except Exception as fallback_error:
+                logger.error(f"❌ Критическая ошибка: не удалось отправить сообщение пользователю {user_id}: {fallback_error}", exc_info=True)
     
     elif state == 'edit_date':
         user_id = update.message.from_user.id
