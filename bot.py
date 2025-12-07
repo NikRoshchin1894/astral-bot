@@ -4916,8 +4916,21 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         'openai_key': openai_key
     }
     
-    # Запускаем генерацию в фоне
-    asyncio.create_task(generate_natal_chart_background(user_id, context))
+    # Запускаем генерацию в фоне в отдельном потоке
+    def run_generation_from_message():
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(generate_natal_chart_background(user_id, context))
+            finally:
+                loop.close()
+        except Exception as gen_error:
+            logger.error(f"❌ Ошибка при запуске генерации в потоке: {gen_error}", exc_info=True)
+    
+    gen_thread = threading.Thread(target=run_generation_from_message, daemon=True)
+    gen_thread.start()
+    logger.info(f"🚀 Генерация натальной карты запущена в фоновом потоке для пользователя {user_id}")
 
 
 # Глобальная переменная для хранения application (нужна для webhook и проверки платежей)
@@ -4956,16 +4969,29 @@ def create_webhook_app(application_instance):
                             loop = asyncio.new_event_loop()
                             asyncio.set_event_loop(loop)
                             try:
+                                # Обрабатываем обновление через Application
+                                # Application должен быть инициализирован и запущен к этому моменту
                                 loop.run_until_complete(application_instance.process_update(update))
-                                logger.debug(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                                logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                            except Exception as process_error:
+                                logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True, exc_info=True)
                             finally:
-                                loop.close()
-                        except Exception as process_error:
-                            logger.error(f"❌ Ошибка при обработке обновления: {process_error}", exc_info=True)
+                                # Не закрываем loop сразу - даем время на обработку
+                                try:
+                                    # Ждем немного перед закрытием, чтобы убедиться, что все задачи выполнены
+                                    pending = asyncio.all_tasks(loop)
+                                    if pending:
+                                        logger.debug(f"⚠️ Есть {len(pending)} незавершенных задач перед закрытием loop")
+                                    loop.close()
+                                except Exception as close_error:
+                                    logger.warning(f"⚠️ Ошибка при закрытии loop: {close_error}")
+                        except Exception as thread_error:
+                            logger.error(f"❌ Ошибка в потоке обработки обновления: {thread_error}", exc_info=True)
                     
                     # Запускаем обработку в отдельном потоке
                     update_thread = threading.Thread(target=process_update, daemon=True)
                     update_thread.start()
+                    logger.debug(f"🔄 Поток обработки обновления {update.update_id} запущен")
                 
                     return jsonify({'status': 'ok'}), 200
                 else:
@@ -5387,6 +5413,10 @@ def main():
                         logger.info("🚀 Запуск Application...")
                         await application.start()
                         logger.info("✅ Application запущен и готов обрабатывать обновления")
+                        
+                        # Обновляем глобальную переменную для доступа из webhook handler
+                        global telegram_application
+                        telegram_application = application
                         
                         # Обновления обрабатываются напрямую в telegram_webhook через process_update()
                         # в отдельных потоках с собственными event loops
