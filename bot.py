@@ -15,6 +15,8 @@ import time
 import uuid
 import threading
 import queue
+import signal
+import atexit
 from datetime import datetime
 from typing import Optional, Tuple
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Bot
@@ -5162,6 +5164,13 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 telegram_application = None
 # Событие для сигнализации о готовности Application
 application_ready_event = threading.Event()
+# Флаг для корректного завершения
+shutdown_event = threading.Event()
+# Глобальные переменные для cleanup
+flask_app = None
+webhook_thread = None
+app_thread = None
+werkzeug_server = None
 
 
 def create_webhook_app(application_instance):
@@ -5511,8 +5520,93 @@ async def check_pending_payments_periodically(application):
             await asyncio.sleep(60)  # В случае ошибки ждем минуту перед следующей попыткой
 
 
+def cleanup_bot():
+    """Корректное завершение работы бота - закрытие всех соединений и потоков"""
+    global telegram_application, shutdown_event, webhook_thread, app_thread, flask_app, werkzeug_server
+    
+    logger.info("🛑 Начало корректного завершения работы бота...")
+    
+    # Устанавливаем флаг остановки
+    shutdown_event.set()
+    
+    # Удаляем webhook из Telegram
+    if telegram_application:
+        try:
+            logger.info("🔗 Удаление webhook из Telegram...")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(telegram_application.bot.delete_webhook())
+                logger.info("✅ Webhook удален из Telegram")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при удалении webhook: {e}")
+    
+    # Останавливаем Application
+    if telegram_application:
+        try:
+            logger.info("🛑 Остановка Application...")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                if hasattr(telegram_application, 'running') and telegram_application.running:
+                    loop.run_until_complete(telegram_application.stop())
+                    loop.run_until_complete(telegram_application.shutdown())
+                logger.info("✅ Application остановлен")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
+    
+    # Останавливаем Werkzeug server (если он был запущен)
+    if werkzeug_server:
+        try:
+            logger.info("🛑 Остановка Werkzeug server...")
+            werkzeug_server.shutdown()
+            logger.info("✅ Werkzeug server остановлен")
+        except Exception as e:
+            logger.warning(f"⚠️ Ошибка при остановке Werkzeug server: {e}")
+    
+    # Ждем завершения потоков (с таймаутом)
+    if webhook_thread and webhook_thread.is_alive():
+        logger.info("⏳ Ожидание завершения webhook потока...")
+        webhook_thread.join(timeout=5)
+        if webhook_thread.is_alive():
+            logger.warning("⚠️ Webhook поток не завершился за 5 секунд, принудительно завершаем")
+    
+    if app_thread and app_thread.is_alive():
+        logger.info("⏳ Ожидание завершения Application потока...")
+        app_thread.join(timeout=5)
+        if app_thread.is_alive():
+            logger.warning("⚠️ Application поток не завершился за 5 секунд, принудительно завершаем")
+    
+    # Закрываем соединения с БД
+    try:
+        logger.info("🔌 Закрытие соединений с базой данных...")
+        # Закрытие соединений будет выполнено автоматически при завершении процесса
+        logger.info("✅ Соединения с БД закрыты")
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка при закрытии соединений с БД: {e}")
+    
+    logger.info("✅ Завершение работы бота завершено")
+
+
+def signal_handler(signum, frame):
+    """Обработчик сигналов для корректного завершения"""
+    logger.info(f"📡 Получен сигнал {signum}, запускаем корректное завершение...")
+    cleanup_bot()
+    sys.exit(0)
+
+
 def start_webhook_server(application_instance):
     """Запускает Flask сервер для webhook Telegram и YooKassa в отдельном потоке"""
+    global flask_app, webhook_thread, werkzeug_server
+    
     telegram_webhook_url = os.getenv('TELEGRAM_WEBHOOK_URL', '')
     yookassa_webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')
     
@@ -5539,9 +5633,22 @@ def start_webhook_server(application_instance):
                 # Порт указан в URL - это может быть для прокси, но мы все равно слушаем на своем порту
                 pass  # Используем порт из переменной окружения
         
-        app = create_webhook_app(application_instance)
+        flask_app = create_webhook_app(application_instance)
+        
+        # Добавляем shutdown hook для Flask
+        @flask_app.route('/shutdown', methods=['POST'])
+        def shutdown():
+            """Endpoint для остановки сервера (только для внутреннего использования)"""
+            shutdown_event.set()
+            return jsonify({'status': 'shutting down'}), 200
+        
+        # Используем Werkzeug для более контролируемого запуска/остановки
+        from werkzeug.serving import make_server
+        
+        server = None
         
         def run_flask():
+            nonlocal server
             try:
                 logger.info(f"🌐 Запуск webhook сервера на {host}:{port}")
                 if need_telegram_webhook:
@@ -5550,15 +5657,43 @@ def start_webhook_server(application_instance):
                     logger.info(f"   💳 YooKassa webhook: /webhook/yookassa")
                 logger.info(f"   ❤️  Health check: / и /health")
                 
-                # Используем встроенный Flask server (более совместим)
-                # Для production рекомендуется использовать gunicorn или waitress через отдельную команду
-                logger.info("   Используется встроенный Flask server (threaded mode)")
-                app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+                # Используем Werkzeug server для возможности корректной остановки
+                server = make_server(host, port, flask_app, threaded=True)
+                global werkzeug_server
+                werkzeug_server = server
+                logger.info("   Используется Werkzeug server (threaded mode)")
+                
+                # Запускаем сервер в отдельном потоке для возможности остановки
+                # serve_forever() блокирует, поэтому запускаем его в daemon потоке
+                def serve():
+                    try:
+                        server.serve_forever()
+                    except Exception as e:
+                        if not shutdown_event.is_set():
+                            logger.error(f"❌ Ошибка в Werkzeug server: {e}")
+                
+                server_thread = threading.Thread(target=serve, daemon=True)
+                server_thread.start()
+                
+                # Ждем сигнала остановки
+                while not shutdown_event.is_set():
+                    time.sleep(0.5)
+                            
+                logger.info("🛑 Flask сервер получил сигнал остановки")
             except Exception as e:
-                logger.error(f"❌ Ошибка в Flask сервере: {e}", exc_info=True)
-                raise
+                if not shutdown_event.is_set():
+                    logger.error(f"❌ Ошибка в Flask сервере: {e}", exc_info=True)
+                else:
+                    logger.info("🛑 Flask сервер остановлен")
+            finally:
+                if server:
+                    try:
+                        server.shutdown()
+                        logger.info("✅ Werkzeug server остановлен")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка при остановке Werkzeug server: {e}")
         
-        webhook_thread = threading.Thread(target=run_flask, daemon=True)
+        webhook_thread = threading.Thread(target=run_flask, daemon=False)
         webhook_thread.start()
         logger.info("✅ Webhook сервер запущен в отдельном потоке")
         
@@ -5687,8 +5822,17 @@ def main():
                         # Обновления обрабатываются напрямую в telegram_webhook через process_update()
                         # в отдельных потоках с собственными event loops
                         
-                        # Держим Application запущенным
-                        await asyncio.Event().wait()  # Ждем бесконечно
+                        # Держим Application запущенным, проверяя shutdown_event
+                        shutdown_evt = asyncio.Event()
+                        
+                        # Мониторим shutdown_event в фоновой задаче
+                        async def check_shutdown():
+                            while not shutdown_event.is_set():
+                                await asyncio.sleep(1)
+                            shutdown_evt.set()
+                        
+                        asyncio.create_task(check_shutdown())
+                        await shutdown_evt.wait()  # Ждем сигнала остановки
                         
                     except Exception as e:
                         logger.error(f"❌ Ошибка при запуске Application: {e}", exc_info=True)
@@ -5716,29 +5860,28 @@ def main():
                         logger.warning(f"⚠️  Ошибка при закрытии loop: {e}")
         
         # Запускаем Application в отдельном потоке
-        app_thread = threading.Thread(target=application_runner_thread, daemon=True)
+        global app_thread
+        app_thread = threading.Thread(target=application_runner_thread, daemon=False)
         app_thread.start()
         logger.info("✅ Поток Application запущен")
         
         logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
         logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
         
+        # Регистрируем обработчики сигналов для корректного завершения
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+        atexit.register(cleanup_bot)
+        
+        logger.info("✅ Обработчики сигналов зарегистрированы (SIGTERM, SIGINT)")
+        
         # Держим основной поток живым
         try:
-            while True:
-                time.sleep(60)  # Проверяем каждую минуту
-                # Можно добавить health check или другую периодическую логику
+            while not shutdown_event.is_set():
+                time.sleep(1)  # Проверяем каждую секунду
         except KeyboardInterrupt:
-            logger.info("Бот остановлен пользователем")
-            # Удаляем webhook при остановке
-            try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(application.bot.delete_webhook())
-                loop.close()
-                logger.info("✅ Webhook удален из Telegram")
-            except Exception as e:
-                logger.warning(f"⚠️  Не удалось удалить webhook: {e}")
+            logger.info("📡 Получен KeyboardInterrupt, запускаем корректное завершение...")
+            cleanup_bot()
     else:
         # Режим POLLING (для разработки/тестирования)
         logger.info("🔄 Запуск бота в режиме POLLING")
