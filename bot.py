@@ -5801,39 +5801,126 @@ def cleanup_bot():
     # Устанавливаем флаг остановки
     shutdown_event.set()
     
-    # Удаляем webhook из Telegram
-    if telegram_application:
-        try:
-            logger.info("🔗 Удаление webhook из Telegram...")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(telegram_application.bot.delete_webhook())
-                logger.info("✅ Webhook удален из Telegram")
-            except Exception as e:
-                logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
-            finally:
-                loop.close()
-        except Exception as e:
-            logger.warning(f"⚠️ Ошибка при удалении webhook: {e}")
-    
-    # Останавливаем Application
+    # Сначала останавливаем Application (чтобы все задачи завершились корректно)
     if telegram_application:
         try:
             logger.info("🛑 Остановка Application...")
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+            
+            # Пытаемся получить event loop Application
+            app_loop = None
             try:
-                if hasattr(telegram_application, 'running') and telegram_application.running:
-                    loop.run_until_complete(telegram_application.stop())
-                    loop.run_until_complete(telegram_application.shutdown())
-                logger.info("✅ Application остановлен")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
-            finally:
-                loop.close()
+                if hasattr(telegram_application, '_loop') and telegram_application._loop:
+                    app_loop = telegram_application._loop
+                elif hasattr(telegram_application, 'updater') and hasattr(telegram_application.updater, '_loop'):
+                    app_loop = telegram_application.updater._loop
+            except:
+                pass
+            
+            if app_loop and app_loop.is_running() and not app_loop.is_closed():
+                # Используем event loop Application
+                try:
+                    if hasattr(telegram_application, 'running') and telegram_application.running:
+                        future = asyncio.run_coroutine_threadsafe(
+                            telegram_application.stop(),
+                            app_loop
+                        )
+                        future.result(timeout=10)
+                        
+                        future = asyncio.run_coroutine_threadsafe(
+                            telegram_application.shutdown(),
+                            app_loop
+                        )
+                        future.result(timeout=10)
+                    logger.info("✅ Application остановлен")
+                except Exception as e:
+                    error_str = str(e)
+                    if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                        logger.warning(f"⚠️ Event loop Application уже закрыт, пропускаем остановку")
+                    else:
+                        logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
+            else:
+                # Создаем новый event loop только если нет доступного
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        if hasattr(telegram_application, 'running') and telegram_application.running:
+                            loop.run_until_complete(telegram_application.stop())
+                            loop.run_until_complete(telegram_application.shutdown())
+                        logger.info("✅ Application остановлен")
+                    except Exception as e:
+                        error_str = str(e)
+                        if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                            logger.warning(f"⚠️ Event loop закрыт, пропускаем остановку")
+                        else:
+                            logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
+                    finally:
+                        if not loop.is_closed():
+                            loop.close()
+                except Exception as e:
+                    logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
         except Exception as e:
-            logger.warning(f"⚠️ Ошибка при остановке Application: {e}")
+            logger.warning(f"⚠️ Критическая ошибка при остановке Application: {e}")
+    
+    # Удаляем webhook из Telegram (после остановки Application)
+    if telegram_application:
+        try:
+            logger.info("🔗 Удаление webhook из Telegram...")
+            
+            # Пытаемся использовать event loop Application, если он еще доступен
+            app_loop = None
+            try:
+                if hasattr(telegram_application, '_loop') and telegram_application._loop:
+                    app_loop = telegram_application._loop
+                elif hasattr(telegram_application, 'updater') and hasattr(telegram_application.updater, '_loop'):
+                    app_loop = telegram_application.updater._loop
+            except:
+                pass
+            
+            if app_loop and app_loop.is_running() and not app_loop.is_closed():
+                # Используем event loop Application
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        telegram_application.bot.delete_webhook(),
+                        app_loop
+                    )
+                    future.result(timeout=5)
+                    logger.info("✅ Webhook удален из Telegram")
+                except Exception as e:
+                    error_str = str(e)
+                    if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                        logger.warning(f"⚠️ Event loop закрыт, пропускаем удаление webhook")
+                    else:
+                        logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+            else:
+                # Создаем новый event loop только если нет доступного
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(telegram_application.bot.delete_webhook())
+                        logger.info("✅ Webhook удален из Telegram")
+                    except Exception as e:
+                        error_str = str(e)
+                        if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                            logger.warning(f"⚠️ Event loop закрыт, пропускаем удаление webhook")
+                        else:
+                            logger.warning(f"⚠️ Не удалось удалить webhook: {e}")
+                    finally:
+                        if not loop.is_closed():
+                            loop.close()
+                except Exception as e:
+                    error_str = str(e)
+                    if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                        logger.warning(f"⚠️ Event loop закрыт, пропускаем удаление webhook")
+                    else:
+                        logger.warning(f"⚠️ Ошибка при удалении webhook: {e}")
+        except Exception as e:
+            error_str = str(e)
+            if 'Event loop is closed' in error_str or 'event loop is closed' in error_str.lower():
+                logger.warning(f"⚠️ Event loop закрыт, пропускаем удаление webhook")
+            else:
+                logger.warning(f"⚠️ Ошибка при удалении webhook: {e}")
     
     # Останавливаем Werkzeug server (если он был запущен)
     if werkzeug_server:
