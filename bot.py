@@ -4974,14 +4974,10 @@ def create_webhook_app(application_instance):
                                 loop.run_until_complete(application_instance.process_update(update))
                                 logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
                             except Exception as process_error:
-                                logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True, exc_info=True)
+                                logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True)
                             finally:
-                                # Не закрываем loop сразу - даем время на обработку
+                                # Закрываем loop после обработки
                                 try:
-                                    # Ждем немного перед закрытием, чтобы убедиться, что все задачи выполнены
-                                    pending = asyncio.all_tasks(loop)
-                                    if pending:
-                                        logger.debug(f"⚠️ Есть {len(pending)} незавершенных задач перед закрытием loop")
                                     loop.close()
                                 except Exception as close_error:
                                     logger.warning(f"⚠️ Ошибка при закрытии loop: {close_error}")
