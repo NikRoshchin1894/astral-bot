@@ -552,10 +552,27 @@ def log_event(user_id: int, event_type: str, event_data: Optional[dict] = None):
         event_type: Тип события (например: 'start', 'button_click', 'payment', 'natal_chart_request')
         event_data: Дополнительные данные события в формате словаря (будут сохранены как JSON)
     """
+    # Проверяем валидность входных данных
+    if not user_id:
+        logger.warning(f"⚠️ Попытка залогировать событие {event_type} без user_id")
+        return
+    
+    if not event_type:
+        logger.warning(f"⚠️ Попытка залогировать событие без типа для user_id {user_id}")
+        return
+    
     try:
         conn, db_type = get_db_connection()
         cursor = conn.cursor()
-        data_json = json.dumps(event_data, ensure_ascii=False) if event_data else None
+        
+        # Сериализуем event_data в JSON
+        try:
+            data_json = json.dumps(event_data, ensure_ascii=False) if event_data else None
+        except (TypeError, ValueError) as json_error:
+            logger.warning(f"⚠️ Не удалось сериализовать event_data для события {event_type}: {json_error}")
+            data_json = json.dumps({'error': 'serialization_failed', 'original_error': str(json_error)})
+        
+        timestamp = datetime.now().isoformat()
         
         if db_type == 'postgresql':
             cursor.execute('''
@@ -565,7 +582,7 @@ def log_event(user_id: int, event_type: str, event_data: Optional[dict] = None):
                 user_id,
                 event_type,
                 data_json,
-                datetime.now().isoformat()
+                timestamp
             ))
         else:
             cursor.execute('''
@@ -575,13 +592,15 @@ def log_event(user_id: int, event_type: str, event_data: Optional[dict] = None):
                 user_id,
                 event_type,
                 data_json,
-                datetime.now().isoformat()
+                timestamp
             ))
         conn.commit()
         conn.close()
-        logger.info(f"Event logged: {event_type} for user {user_id}")
+        logger.debug(f"📊 Event logged: {event_type} for user {user_id}")
     except Exception as e:
-        logger.error(f"Failed to log event: {e}")
+        # Детальное логирование ошибки для отладки
+        logger.error(f"❌ Failed to log event {event_type} for user {user_id}: {e}", exc_info=True)
+        # Не прерываем выполнение - логирование событий не критично для работы бота
 
 
 def user_has_paid(user_id: int) -> bool:
@@ -1069,13 +1088,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning(f"Не удалось ответить на callback query: {answer_error}")
     
     # Логируем событие нажатия кнопки
+    # log_event уже обрабатывает ошибки внутри, дополнительный try-except не нужен
     if user_id:
-        try:
-            log_event(user_id, 'button_click', {
-                'button': data
-            })
-        except Exception as log_error:
-            logger.warning(f"Не удалось залогировать событие: {log_error}")
+        log_event(user_id, 'button_click', {
+            'button': data
+        })
     
     # Обрабатываем различные callback_data
     try:
@@ -4266,7 +4283,8 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             'birth_name': user_data.get('birth_name'),
             'birth_date': user_data.get('birth_date'),
             'birth_time': user_data.get('birth_time'),
-            'birth_place': user_data.get('birth_place')
+            'birth_place': user_data.get('birth_place'),
+            'source': 'initial_fill'
         })
         
         await update.message.reply_text(
@@ -4294,6 +4312,17 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         try:
             save_user_profile(user_id, user_data)
             log_event(user_id, 'profile_field_edited', {'field': 'name', 'value': text})
+            
+            # Проверяем, стал ли профиль полным после редактирования
+            if is_profile_complete(user_data):
+                log_event(user_id, 'profile_complete', {
+                    'birth_name': user_data.get('birth_name'),
+                    'birth_date': user_data.get('birth_date'),
+                    'birth_time': user_data.get('birth_time'),
+                    'birth_place': user_data.get('birth_place'),
+                    'source': 'edit'
+                })
+            
             logger.info(f"✅ Имя пользователя {user_id} успешно сохранено в БД: {text}")
         except Exception as save_error:
             logger.error(f"❌ Ошибка при сохранении имени пользователя {user_id}: {save_error}", exc_info=True)
@@ -4385,6 +4414,16 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
         log_event(user_id, 'profile_field_edited', {'field': 'date'})
+        
+        # Проверяем, стал ли профиль полным после редактирования
+        if is_profile_complete(user_data):
+            log_event(user_id, 'profile_complete', {
+                'birth_name': user_data.get('birth_name'),
+                'birth_date': user_data.get('birth_date'),
+                'birth_time': user_data.get('birth_time'),
+                'birth_place': user_data.get('birth_place'),
+                'source': 'edit'
+            })
         # Сразу показываем профиль вместо сообщения об успехе
         try:
             await show_profile_message(update, user_data)
@@ -4450,6 +4489,16 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
         log_event(user_id, 'profile_field_edited', {'field': 'time'})
+        
+        # Проверяем, стал ли профиль полным после редактирования
+        if is_profile_complete(user_data):
+            log_event(user_id, 'profile_complete', {
+                'birth_name': user_data.get('birth_name'),
+                'birth_date': user_data.get('birth_date'),
+                'birth_time': user_data.get('birth_time'),
+                'birth_place': user_data.get('birth_place'),
+                'source': 'edit'
+            })
         # Сразу показываем профиль вместо сообщения об успехе
         try:
             await show_profile_message(update, user_data)
@@ -4515,6 +4564,16 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         user_id = update.message.from_user.id
         save_user_profile(user_id, user_data)
         log_event(user_id, 'profile_field_edited', {'field': 'place'})
+        
+        # Проверяем, стал ли профиль полным после редактирования
+        if is_profile_complete(user_data):
+            log_event(user_id, 'profile_complete', {
+                'birth_name': user_data.get('birth_name'),
+                'birth_date': user_data.get('birth_date'),
+                'birth_time': user_data.get('birth_time'),
+                'birth_place': user_data.get('birth_place'),
+                'source': 'edit'
+            })
         # Сразу показываем профиль вместо сообщения об успехе
         try:
             await show_profile_message(update, user_data)
