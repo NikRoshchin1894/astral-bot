@@ -3118,24 +3118,20 @@ async def handle_natal_chart_request_from_payment(user_id: int, context: Context
                 asyncio.set_event_loop(loop)
                 try:
                     # Создаем новый context с правильным bot для нового event loop
-                    # Создаем новый bot в новом event loop
+                    # Создаем новый bot в новом event loop - это безопасно, так как
+                    # каждый Bot объект работает независимо и использует свой собственный HTTP сессион
                     new_bot = Bot(token=bot_token)
                     
-                    if isinstance(context, ApplicationContextWrapper):
-                        # Создаем новый wrapper с тем же application, но для нового event loop
-                        new_context = ApplicationContextWrapper(context.application, user_id)
-                        # Обновляем bot в context на новый
-                        new_context.bot = new_bot
-                    else:
-                        # Создаем простой wrapper
-                        from telegram.ext import ContextTypes
-                        class SimpleContext:
-                            def __init__(self, bot_instance, user_id_val):
-                                self.bot = bot_instance
-                                self.user_id = user_id_val
-                                self.user_data = load_user_profile(user_id_val) or {}
-                        
-                        new_context = SimpleContext(new_bot, user_id)
+                    # Создаем SimpleContext для передачи в generate_natal_chart_background
+                    # Это не мешает callback queries, т.к. они обрабатываются в основном event loop
+                    from telegram.ext import ContextTypes
+                    class SimpleContext:
+                        def __init__(self, bot_instance, user_id_val):
+                            self.bot = bot_instance
+                            self.user_id = user_id_val
+                            self.user_data = load_user_profile(user_id_val) or {}
+                    
+                    new_context = SimpleContext(new_bot, user_id)
                     
                     loop.run_until_complete(generate_natal_chart_background(user_id, new_context))
                 finally:
