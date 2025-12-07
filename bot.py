@@ -1302,7 +1302,7 @@ async def handle_planets_request(query, context):
         log_event(user_id, 'planets_data_success', {})
         
         keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"📜 Получить интерпретацию ({NATAL_CHART_PRICE_RUB} ₽)", callback_data='natal_chart')],
+            [InlineKeyboardButton("📜 Получить интерпретацию", callback_data='natal_chart')],
             [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')]
         ])
         
