@@ -5807,13 +5807,24 @@ def main():
                         
                         # В webhook режиме нам не нужен updater, но нужно убедиться, что обработчики активны
                         # Проверяем, что обработчики зарегистрированы
-                        handlers_count = sum(len(group) for group in application.handlers)
-                        logger.info(f"✅ Зарегистрировано обработчиков: {handlers_count}")
-                        for i, group in enumerate(application.handlers):
-                            if group:
-                                logger.info(f"   Группа {i}: {len(group)} обработчиков")
-                                for handler in group:
-                                    logger.info(f"      - {type(handler).__name__}")
+                        try:
+                            handlers_count = 0
+                            for i, group in enumerate(application.handlers):
+                                # Проверяем, что group является итерируемым (список, tuple) и не пустой
+                                if group and hasattr(group, '__iter__') and not isinstance(group, (str, bytes)):
+                                    try:
+                                        group_len = len(group)
+                                        handlers_count += group_len
+                                        logger.info(f"   Группа {i}: {group_len} обработчиков")
+                                        for handler in group:
+                                            logger.info(f"      - {type(handler).__name__}")
+                                    except (TypeError, AttributeError) as e:
+                                        logger.warning(f"   Группа {i}: не удалось обработать ({type(group).__name__}): {e}")
+                                else:
+                                    logger.debug(f"   Группа {i}: пропущена (тип: {type(group).__name__})")
+                            logger.info(f"✅ Зарегистрировано обработчиков: {handlers_count}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Ошибка при подсчете обработчиков: {e}, но продолжаем работу")
                         
                         # Сигнализируем, что Application готов к обработке обновлений
                         application_ready_event.set()
