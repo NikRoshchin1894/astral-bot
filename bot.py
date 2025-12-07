@@ -1031,7 +1031,26 @@ async def about_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик нажатий на кнопки"""
+    # Проверяем, что есть callback_query
+    if not update.callback_query:
+        logger.error("❌ button_handler вызван без callback_query")
+        return
+    
     query = update.callback_query
+    
+    # Проверяем, что есть данные
+    if not query.data:
+        logger.error(f"❌ callback_query без data для пользователя {query.from_user.id if query.from_user else 'unknown'}")
+        try:
+            await query.answer("Ошибка: нет данных в запросе")
+        except:
+            pass
+        return
+    
+    user_id = query.from_user.id if query.from_user else None
+    data = query.data
+    
+    logger.info(f"🔘 Обработка нажатия кнопки: {data} от пользователя {user_id}")
     
     # Отвечаем на callback query как можно раньше
     # Обрабатываем ошибку, если query уже истек (старые запросы)
@@ -1046,44 +1065,59 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.warning(f"BadRequest при ответе на callback query: {bad_request_error}")
     except Exception as answer_error:
         # Обрабатываем другие ошибки
-        logger.debug(f"Не удалось ответить на callback query: {answer_error}")
-    
-    user_id = query.from_user.id
-    data = query.data
+        logger.warning(f"Не удалось ответить на callback query: {answer_error}")
     
     # Логируем событие нажатия кнопки
-    log_event(user_id, 'button_click', {
-        'button': data
-    })
+    if user_id:
+        try:
+            log_event(user_id, 'button_click', {
+                'button': data
+            })
+        except Exception as log_error:
+            logger.warning(f"Не удалось залогировать событие: {log_error}")
     
-    if data == 'my_profile':
-        await my_profile(query, context)
-    elif data == 'select_edit_field':
-        await select_edit_field(query, context)
-    elif data == 'edit_profile':
-        await natal_chart_start(query, context)
-    elif data == 'edit_name':
-        await start_edit_field(query, context, 'name')
-    elif data == 'edit_date':
-        await start_edit_field(query, context, 'date')
-    elif data == 'edit_time':
-        await start_edit_field(query, context, 'time')
-    elif data == 'edit_place':
-        await start_edit_field(query, context, 'place')
-    elif data == 'natal_chart':
-        await handle_natal_chart_request(query, context)
-    elif data == 'natal_chart_start':
-        await natal_chart_start(query, context)
-    elif data == 'back_menu':
-        await back_to_menu(query)
-    elif data == 'buy_natal_chart':
-        await start_payment_process(query, context)
-    elif data == 'support':
-        await show_support(query, context)
-    elif data == 'planets_info':
-        await show_planets_info(query, context)
-    elif data == 'get_planets_data':
-        await handle_planets_request(query, context)
+    # Обрабатываем различные callback_data
+    try:
+        if data == 'my_profile':
+            await my_profile(query, context)
+        elif data == 'select_edit_field':
+            await select_edit_field(query, context)
+        elif data == 'edit_profile':
+            await natal_chart_start(query, context)
+        elif data == 'edit_name':
+            await start_edit_field(query, context, 'name')
+        elif data == 'edit_date':
+            await start_edit_field(query, context, 'date')
+        elif data == 'edit_time':
+            await start_edit_field(query, context, 'time')
+        elif data == 'edit_place':
+            await start_edit_field(query, context, 'place')
+        elif data == 'natal_chart':
+            await handle_natal_chart_request(query, context)
+        elif data == 'natal_chart_start':
+            await natal_chart_start(query, context)
+        elif data == 'back_menu':
+            await back_to_menu(query)
+        elif data == 'buy_natal_chart':
+            await start_payment_process(query, context)
+        elif data == 'support':
+            await show_support(query, context)
+        elif data == 'planets_info':
+            await show_planets_info(query, context)
+        elif data == 'get_planets_data':
+            await handle_planets_request(query, context)
+        else:
+            logger.warning(f"⚠️ Неизвестный callback_data: {data} от пользователя {user_id}")
+            try:
+                await query.answer(f"Неизвестная команда: {data}", show_alert=False)
+            except:
+                pass
+    except Exception as handler_error:
+        logger.error(f"❌ Ошибка при обработке callback_data '{data}' для пользователя {user_id}: {handler_error}", exc_info=True)
+        try:
+            await query.answer("Произошла ошибка при обработке запроса", show_alert=True)
+        except:
+            pass
 
 
 async def back_to_menu(query):
@@ -5432,29 +5466,65 @@ def create_webhook_app(application_instance):
                     handlers_count = len(application_instance.handlers[0]) if hasattr(application_instance, 'handlers') and application_instance.handlers else 0
                     logger.info(f"   📋 Зарегистрировано обработчиков: {handlers_count}")
                     
-                    # Обрабатываем обновление напрямую через Application в отдельном потоке
-                    def process_update():
+                    # Обрабатываем обновление через Application
+                    # Используем asyncio для обработки в правильном event loop
+                    try:
+                        logger.info(f"   🔄 Начало обработки update {update.update_id} через process_update()...")
+                        
+                        # Пытаемся получить event loop Application
+                        app_loop = None
                         try:
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
+                            # Пытаемся получить event loop из Application
+                            if hasattr(application_instance, '_loop') and application_instance._loop:
+                                app_loop = application_instance._loop
+                            elif hasattr(application_instance, 'updater') and hasattr(application_instance.updater, '_loop'):
+                                app_loop = application_instance.updater._loop
+                        except:
+                            pass
+                        
+                        if app_loop and app_loop.is_running():
+                            # Если есть работающий event loop, используем его
+                            logger.info(f"   ✅ Используем event loop Application для обработки")
+                            future = asyncio.run_coroutine_threadsafe(
+                                application_instance.process_update(update),
+                                app_loop
+                            )
+                            # Ждем завершения обработки (максимум 30 секунд)
                             try:
-                                logger.info(f"   🔄 Начало обработки update {update.update_id} через process_update()...")
-                                # Обрабатываем обновление через Application
-                                loop.run_until_complete(application_instance.process_update(update))
+                                future.result(timeout=30)
                                 logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
-                            except Exception as process_error:
-                                logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True)
-                            finally:
+                            except Exception as future_error:
+                                logger.error(f"❌ Ошибка при ожидании обработки обновления {update.update_id}: {future_error}", exc_info=True)
+                        else:
+                            # Если нет работающего loop, создаем новый
+                            logger.info(f"   ⚠️ Event loop Application недоступен, создаем новый")
+                            def process_update():
                                 try:
-                                    loop.close()
-                                except Exception as close_error:
-                                    logger.warning(f"⚠️ Ошибка при закрытии loop: {close_error}")
-                        except Exception as thread_error:
-                            logger.error(f"❌ Ошибка в потоке обработки обновления: {thread_error}", exc_info=True)
-                    
-                    # Запускаем обработку в отдельном потоке
-                    update_thread = threading.Thread(target=process_update, daemon=True)
-                    update_thread.start()
+                                    loop = asyncio.new_event_loop()
+                                    asyncio.set_event_loop(loop)
+                                    try:
+                                        # Обрабатываем обновление через Application
+                                        loop.run_until_complete(application_instance.process_update(update))
+                                        logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                                    except Exception as process_error:
+                                        logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True)
+                                    finally:
+                                        try:
+                                            # Закрываем loop только если он не был закрыт
+                                            if not loop.is_closed():
+                                                loop.close()
+                                        except Exception as close_error:
+                                            logger.warning(f"⚠️ Ошибка при закрытии loop: {close_error}")
+                                except Exception as thread_error:
+                                    logger.error(f"❌ Ошибка в потоке обработки обновления: {thread_error}", exc_info=True)
+                            
+                            # Запускаем обработку в отдельном потоке
+                            update_thread = threading.Thread(target=process_update, daemon=True)
+                            update_thread.start()
+                            # Не ждем завершения потока, чтобы не блокировать webhook
+                            
+                    except Exception as process_error:
+                        logger.error(f"❌ Критическая ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True)
                 
                     return jsonify({'status': 'ok'}), 200
                 else:
