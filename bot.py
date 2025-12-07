@@ -1050,7 +1050,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id if query.from_user else None
     data = query.data
     
-    logger.debug(f"🔘 Обработка нажатия кнопки: {data} от пользователя {user_id}")
+    logger.info(f"🔘 Обработка нажатия кнопки: {data} от пользователя {user_id}")
     
     # Отвечаем на callback query как можно раньше
     # Обрабатываем ошибку, если query уже истек (старые запросы)
@@ -1078,7 +1078,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Обрабатываем различные callback_data
     try:
+        logger.info(f"🔘 Начинаем обработку callback_data: {data}")
         if data == 'my_profile':
+            logger.info(f"🔘 Вызов my_profile для пользователя {user_id}")
             await my_profile(query, context)
         elif data == 'select_edit_field':
             await select_edit_field(query, context)
@@ -5422,6 +5424,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # Глобальная переменная для хранения application (нужна для webhook и проверки платежей)
 telegram_application = None
+# Глобальная переменная для хранения event loop Application
+application_event_loop = None
 # Событие для сигнализации о готовности Application
 application_ready_event = threading.Event()
 # Флаг для корректного завершения
@@ -5453,6 +5457,7 @@ def create_webhook_app(application_instance):
                         update_type = "message"
                     elif update.callback_query:
                         update_type = "callback_query"
+                        logger.info(f"📨 Callback query получен: data={update.callback_query.data}, user_id={update.callback_query.from_user.id if update.callback_query.from_user else 'unknown'}")
                     elif update.pre_checkout_query:
                         update_type = "pre_checkout_query"
                     
@@ -5478,16 +5483,23 @@ def create_webhook_app(application_instance):
                         # Пытаемся получить event loop Application
                         app_loop = None
                         try:
-                            # Пытаемся получить event loop из Application
-                            if hasattr(application_instance, '_loop') and application_instance._loop:
-                                app_loop = application_instance._loop
-                            elif hasattr(application_instance, 'updater') and hasattr(application_instance.updater, '_loop'):
-                                app_loop = application_instance.updater._loop
-                        except:
-                            pass
+                            # Сначала пытаемся использовать сохраненный event loop
+                            import sys
+                            bot_module = sys.modules.get('bot') or sys.modules.get('__main__')
+                            if bot_module and hasattr(bot_module, 'application_event_loop'):
+                                app_loop = bot_module.application_event_loop
+                            # Если не нашли, пытаемся получить из Application
+                            if not app_loop:
+                                if hasattr(application_instance, '_loop') and application_instance._loop:
+                                    app_loop = application_instance._loop
+                                elif hasattr(application_instance, 'updater') and hasattr(application_instance.updater, '_loop'):
+                                    app_loop = application_instance.updater._loop
+                        except Exception as loop_error:
+                            logger.debug(f"Ошибка при получении event loop: {loop_error}")
                         
                         if app_loop and app_loop.is_running() and not app_loop.is_closed():
                             # Если есть работающий event loop, используем его
+                            logger.info(f"✅ Используем event loop Application для обработки update {update.update_id}")
                             future = asyncio.run_coroutine_threadsafe(
                                 application_instance.process_update(update),
                                 app_loop
@@ -5495,20 +5507,22 @@ def create_webhook_app(application_instance):
                             # Ждем завершения обработки (максимум 30 секунд)
                             try:
                                 future.result(timeout=30)
-                                logger.debug(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                                logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
                             except Exception as future_error:
                                 logger.error(f"❌ Ошибка при ожидании обработки обновления {update.update_id}: {future_error}", exc_info=True)
                         else:
                             # Если нет работающего loop, создаем новый
-                            logger.debug(f"Event loop Application недоступен, создаем новый")
+                            logger.warning(f"⚠️ Event loop Application недоступен для update {update.update_id}, создаем новый")
+                            logger.warning(f"   app_loop={app_loop}, is_running={app_loop.is_running() if app_loop else 'N/A'}, is_closed={app_loop.is_closed() if app_loop else 'N/A'}")
                             def process_update():
                                 try:
                                     loop = asyncio.new_event_loop()
                                     asyncio.set_event_loop(loop)
                                     try:
                                         # Обрабатываем обновление через Application
+                                        logger.info(f"🔄 Обработка update {update.update_id} в новом event loop")
                                         loop.run_until_complete(application_instance.process_update(update))
-                                        logger.debug(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
+                                        logger.info(f"✅ Обновление обработано: update_id={update.update_id}, type={update_type}")
                                     except Exception as process_error:
                                         logger.error(f"❌ Ошибка при обработке обновления {update.update_id}: {process_error}", exc_info=True)
                                     finally:
@@ -6163,9 +6177,12 @@ def main():
                         await application.start()
                         logger.info("✅ Application запущен и готов обрабатывать обновления")
                         
-                        # Обновляем глобальную переменную для доступа из webhook handler
-                        global telegram_application, application_ready_event
+                        # Обновляем глобальные переменные для доступа из webhook handler
+                        global telegram_application, application_ready_event, application_event_loop
                         telegram_application = application
+                        # Сохраняем ссылку на event loop Application для обработки обновлений
+                        application_event_loop = asyncio.get_event_loop()
+                        logger.info(f"✅ Event loop Application сохранен: {application_event_loop}")
                         
                         # В webhook режиме нам не нужен updater, но нужно убедиться, что обработчики активны
                         # Проверяем, что обработчики зарегистрированы
