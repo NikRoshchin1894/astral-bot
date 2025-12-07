@@ -2941,9 +2941,20 @@ async def check_and_process_pending_payment(user_id: int, context_or_application
 
 async def handle_natal_chart_request_from_payment(user_id: int, context: ContextTypes.DEFAULT_TYPE):
     """Запускает генерацию натальной карты после успешной оплаты"""
+    # Получаем bot token для создания нового bot в новом event loop
+    bot_token = None
+    if hasattr(context, 'bot') and context.bot:
+        bot_token = context.bot.token
+    elif hasattr(context, 'application') and context.application:
+        bot_token = context.application.bot.token
+    
+    if not bot_token:
+        logger.error(f"❌ Не удалось получить bot token для пользователя {user_id}")
+        return
+    
     try:
         # Загружаем данные пользователя из контекста или базы данных
-        user_data = context.user_data
+        user_data = context.user_data if hasattr(context, 'user_data') else {}
         if not user_data.get('birth_name'):
             loaded_data = load_user_profile(user_id)
             if loaded_data:
@@ -2956,17 +2967,32 @@ async def handle_natal_chart_request_from_payment(user_id: int, context: Context
         birth_place = user_data.get('birth_place')
         
         if not all([birth_name, birth_date, birth_time, birth_place]):
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="✅ *Оплата получена!*\n\n"
-                     "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
-                     "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                ]]),
-                parse_mode='Markdown'
-            )
+            # Отправляем сообщение в отдельном потоке с новым event loop
+            def send_profile_message():
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        # Создаем новый bot в новом event loop
+                        new_bot = Bot(token=bot_token)
+                        loop.run_until_complete(new_bot.send_message(
+                            chat_id=user_id,
+                            text="✅ *Оплата получена!*\n\n"
+                                 "*Чтобы составить подробный отчёт, мне нужно узнать вас чуть лучше.*\n\n"
+                                 "Пожалуйста, заполните свой профиль. Информация оттуда необходима для составления отчёта.",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("➕ Заполнить данные", callback_data='natal_chart_start'),
+                                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                            ]]),
+                            parse_mode='Markdown'
+                        ))
+                    finally:
+                        loop.close()
+                except Exception as send_error:
+                    logger.error(f"❌ Ошибка при отправке сообщения: {send_error}", exc_info=True)
+            
+            thread = threading.Thread(target=send_profile_message, daemon=True)
+            thread.start()
             return
         
         # Логируем начало генерации натальной карты
@@ -2991,16 +3017,30 @@ async def handle_natal_chart_request_from_payment(user_id: int, context: Context
         # Проверяем наличие OpenAI ключа
         openai_key = os.getenv('OPENAI_API_KEY')
         if not openai_key:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="❌ *Ошибка настройки*\n\n"
-                     "API ключ OpenAI не настроен.\n"
-                     "Обратитесь к администратору бота.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                ]]),
-                parse_mode='Markdown'
-            )
+            def send_error_message():
+                try:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        # Создаем новый bot в новом event loop
+                        new_bot = Bot(token=bot_token)
+                        loop.run_until_complete(new_bot.send_message(
+                            chat_id=user_id,
+                            text="❌ *Ошибка настройки*\n\n"
+                                 "API ключ OpenAI не настроен.\n"
+                                 "Обратитесь к администратору бота.",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                            ]]),
+                            parse_mode='Markdown'
+                        ))
+                    finally:
+                        loop.close()
+                except Exception as send_error:
+                    logger.error(f"❌ Ошибка при отправке сообщения: {send_error}", exc_info=True)
+            
+            thread = threading.Thread(target=send_error_message, daemon=True)
+            thread.start()
             return
         
         keyboard = InlineKeyboardMarkup([
@@ -3008,29 +3048,59 @@ async def handle_natal_chart_request_from_payment(user_id: int, context: Context
             [InlineKeyboardButton("💬 Поддержка и обратная связь", callback_data='support')]
         ])
         
-        # Отправляем сообщение о начале генерации и получаем message_id
-        status_message = await context.bot.send_message(
-            chat_id=user_id,
-            text="✅ *Оплата получена!*\n\n"
-                 "Создаём вашу натальную карту... Ожидайте ✨✨\n\n"
-                 "Обычно это занимает не более 5 минут.\n\n"
-                 "*Как подойти к чтению:*\n\n"
-                 "📖 *Читайте постепенно.*\n"
-                 "Не обязательно осваивать всё сразу — возвращайтесь к разделам по настроению или по запросу.\n\n"
-                 "🔍 *Замечайте повторяющиеся мотивы.*\n"
-                 "Они указывают на ваши главные темы и возможные точки трансформации.\n\n"
-                 "💭 *Сопоставляйте текст со своей реальностью.*\n"
-                 "Важно не просто прочитать, а увидеть, где это проявляется в вашей жизни.\n\n"
-                 "✍️ *Записывайте инсайты.*\n"
-                 "Мысли, эмоции, идеи — всё это помогает глубже интегрировать знания о себе.\n\n"
-                 "🔄 *Возвращайтесь к отчёту.*\n"
-                 "Натальная карта — живой инструмент. Она раскрывается по мере того, как вы открываетесь ей.\n\n"
-                 "Это пространство для себя.\n"
-                 "Для осознания.\n"
-                 "Для роста.",
-            reply_markup=keyboard,
-            parse_mode='Markdown'
-        )
+        # Отправляем сообщение о начале генерации в отдельном потоке с новым event loop
+        # и получаем message_id для сохранения в active_generations
+        status_message_result = {'message': None, 'error': None}
+        
+        def send_status_message():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    # Создаем новый bot в новом event loop
+                    new_bot = Bot(token=bot_token)
+                    message = loop.run_until_complete(new_bot.send_message(
+                        chat_id=user_id,
+                        text="✅ *Оплата получена!*\n\n"
+                             "Создаём вашу натальную карту... Ожидайте ✨✨\n\n"
+                             "Обычно это занимает не более 5 минут.\n\n"
+                             "*Как подойти к чтению:*\n\n"
+                             "📖 *Читайте постепенно.*\n"
+                             "Не обязательно осваивать всё сразу — возвращайтесь к разделам по настроению или по запросу.\n\n"
+                             "🔍 *Замечайте повторяющиеся мотивы.*\n"
+                             "Они указывают на ваши главные темы и возможные точки трансформации.\n\n"
+                             "💭 *Сопоставляйте текст со своей реальностью.*\n"
+                             "Важно не просто прочитать, а увидеть, где это проявляется в вашей жизни.\n\n"
+                             "✍️ *Записывайте инсайты.*\n"
+                             "Мысли, эмоции, идеи — всё это помогает глубже интегрировать знания о себе.\n\n"
+                             "🔄 *Возвращайтесь к отчёту.*\n"
+                             "Натальная карта — живой инструмент. Она раскрывается по мере того, как вы открываетесь ей.\n\n"
+                             "Это пространство для себя.\n"
+                             "Для осознания.\n"
+                             "Для роста.",
+                        reply_markup=keyboard,
+                        parse_mode='Markdown'
+                    ))
+                    status_message_result['message'] = message
+                except Exception as e:
+                    status_message_result['error'] = e
+                    logger.error(f"❌ Ошибка при отправке статусного сообщения: {e}", exc_info=True)
+                finally:
+                    loop.close()
+            except Exception as thread_error:
+                logger.error(f"❌ Ошибка в потоке отправки сообщения: {thread_error}", exc_info=True)
+        
+        status_thread = threading.Thread(target=send_status_message, daemon=True)
+        status_thread.start()
+        status_thread.join(timeout=5)  # Ждем до 5 секунд для отправки сообщения
+        
+        if status_message_result['error']:
+            raise status_message_result['error']
+        
+        status_message = status_message_result['message']
+        if not status_message:
+            logger.error(f"❌ Не удалось отправить статусное сообщение пользователю {user_id}")
+            return
         
         # Сохраняем информацию о генерации для отправки результата после завершения
         active_generations[user_id] = {
@@ -3041,13 +3111,33 @@ async def handle_natal_chart_request_from_payment(user_id: int, context: Context
         }
         
         # Запускаем генерацию в фоне в отдельном потоке
-        # Это необходимо, так как process_payment_async вызывается из потока с временным event loop
+        # Создаем новый context для генерации с правильным bot
         def run_generation():
             try:
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    loop.run_until_complete(generate_natal_chart_background(user_id, context))
+                    # Создаем новый context с правильным bot для нового event loop
+                    # Создаем новый bot в новом event loop
+                    new_bot = Bot(token=bot_token)
+                    
+                    if isinstance(context, ApplicationContextWrapper):
+                        # Создаем новый wrapper с тем же application, но для нового event loop
+                        new_context = ApplicationContextWrapper(context.application, user_id)
+                        # Обновляем bot в context на новый
+                        new_context.bot = new_bot
+                    else:
+                        # Создаем простой wrapper
+                        from telegram.ext import ContextTypes
+                        class SimpleContext:
+                            def __init__(self, bot_instance, user_id_val):
+                                self.bot = bot_instance
+                                self.user_id = user_id_val
+                                self.user_data = load_user_profile(user_id_val) or {}
+                        
+                        new_context = SimpleContext(new_bot, user_id)
+                    
+                    loop.run_until_complete(generate_natal_chart_background(user_id, new_context))
                 finally:
                     loop.close()
             except Exception as gen_error:
@@ -3059,19 +3149,31 @@ async def handle_natal_chart_request_from_payment(user_id: int, context: Context
         
     except Exception as e:
         logger.error(f"❌ Ошибка при запуске генерации после оплаты: {e}", exc_info=True)
-        try:
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="✅ *Оплата получена!*\n\n"
-                     "Для начала генерации натальной карты нажмите кнопку ниже:",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                ]]),
-                parse_mode='Markdown'
-            )
-        except Exception as send_error:
-            logger.error(f"❌ Ошибка при отправке сообщения об ошибке: {send_error}", exc_info=True)
+        # Отправляем сообщение об ошибке в отдельном потоке
+        def send_error_fallback():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    # Создаем новый bot в новом event loop
+                    new_bot = Bot(token=bot_token)
+                    loop.run_until_complete(new_bot.send_message(
+                        chat_id=user_id,
+                        text="✅ *Оплата получена!*\n\n"
+                             "Для начала генерации натальной карты нажмите кнопку ниже:",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📜 Натальная карта", callback_data='natal_chart'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]]),
+                        parse_mode='Markdown'
+                    ))
+                finally:
+                    loop.close()
+            except Exception as send_error:
+                logger.error(f"❌ Ошибка при отправке сообщения об ошибке: {send_error}", exc_info=True)
+        
+        error_thread = threading.Thread(target=send_error_fallback, daemon=True)
+        error_thread.start()
 
 
 def save_payment_info(user_id: int, yookassa_payment_id: str, internal_payment_id: str, amount: float):
