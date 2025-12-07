@@ -33,6 +33,7 @@ from telegram.ext import (
 )
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
+from aiohttp import web
 import hmac
 import hashlib
 from openai import OpenAI
@@ -5818,6 +5819,10 @@ def cleanup_bot():
     # Устанавливаем флаг остановки
     shutdown_event.set()
     
+    # В новой упрощенной архитектуре Application и webhook server работают в одном event loop
+    # и завершаются автоматически через shutdown_event
+    # Дополнительная очистка не требуется, но оставляем для совместимости
+    
     # Сначала останавливаем Application (чтобы все задачи завершились корректно)
     if telegram_application:
         try:
@@ -6113,165 +6118,158 @@ def main():
     telegram_webhook_url = os.getenv('TELEGRAM_WEBHOOK_URL', '')
     
     if telegram_webhook_url:
-        # Режим WEBHOOK (для продакшена)
-        logger.info("🌐 Запуск бота в режиме WEBHOOK")
+        # Режим WEBHOOK (для продакшена) - УПРОЩЕННАЯ АРХИТЕКТУРА
+        # Один event loop, один HTTP-вход через aiohttp
+        logger.info("🌐 Запуск бота в режиме WEBHOOK (упрощенная архитектура)")
+        logger.info("✅ Один event loop, один HTTP-вход")
         
-        # Запускаем webhook сервер (для Telegram и YooKassa)
-        webhook_thread = start_webhook_server(application)
+        # Определяем порт
+        port = int(os.getenv('PORT') or os.getenv('WEBHOOK_PORT', '8080'))
+        yookassa_webhook_url = os.getenv('YOOKASSA_WEBHOOK_URL', '')
         
-        if not webhook_thread:
-            logger.error("❌ Не удалось запустить webhook сервер. Проверьте настройки.")
-            return
+        # Извлекаем путь webhook из URL
+        from urllib.parse import urlparse
+        parsed = urlparse(telegram_webhook_url)
+        webhook_path = parsed.path if parsed.path else '/webhook/telegram'
         
-        # Небольшая задержка для гарантии запуска Flask сервера
-        # Flask запускается в отдельном потоке, поэтому не блокирует
-        time.sleep(2)
-        logger.info("⏳ Ожидание запуска Flask сервера...")
+        # Сохраняем ссылку на application
+        global telegram_application
+        telegram_application = application
         
-        # Webhook будет установлен после инициализации Application в его потоке
-        webhook_set_event = threading.Event()
-        
-        # Запускаем Application в отдельном потоке для обработки обновлений
-        def application_runner_thread():
-            """Запускает Application в отдельном потоке с его собственным event loop"""
-            loop = None
-            try:
-                logger.info("🚀 Запуск Application в фоновом потоке...")
-                
-                # Создаем новый event loop для этого потока
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                
-                async def run_application():
-                    """Запускает Application и обрабатывает обновления из очереди"""
-                    try:
-                        # ВАЖНО: Сначала инициализируем Application
-                        logger.info("🔧 Инициализация Application...")
-                        await application.initialize()
-                        logger.info("✅ Application инициализирован")
-                        
-                        # Устанавливаем webhook после инициализации (если еще не установлен)
-                        telegram_webhook_url = os.getenv('TELEGRAM_WEBHOOK_URL', '')
-                        if telegram_webhook_url:
-                            try:
-                                logger.info(f"🔗 Установка webhook в Telegram...")
-                                logger.info(f"   URL: {telegram_webhook_url}")
-                                result = await application.bot.set_webhook(
-                                    url=telegram_webhook_url,
-                                    allowed_updates=Update.ALL_TYPES,
-                                    drop_pending_updates=True
-                                )
-                                if result:
-                                    logger.info("✅ Webhook успешно установлен в Telegram")
-                                else:
-                                    logger.warning("⚠️  Webhook не установлен, но продолжаем работу")
-                            except Conflict as e:
-                                logger.warning(f"⚠️  Webhook уже установлен или конфликт: {e}")
-                                logger.info("   Продолжаем работу - возможно webhook уже установлен")
-                            except Exception as e:
-                                logger.error(f"❌ Ошибка при установке webhook: {e}", exc_info=True)
-                                logger.warning("   Продолжаем работу - возможно webhook уже установлен")
-        
-                        # Затем запускаем Application
-                        logger.info("🚀 Запуск Application...")
-                        await application.start()
-                        logger.info("✅ Application запущен и готов обрабатывать обновления")
-                        
-                        # Обновляем глобальные переменные для доступа из webhook handler
-                        global telegram_application, application_ready_event, application_event_loop
-                        telegram_application = application
-                        # Сохраняем ссылку на event loop Application для обработки обновлений
-                        application_event_loop = asyncio.get_event_loop()
-                        logger.info(f"✅ Event loop Application сохранен: {application_event_loop}")
-                        
-                        # В webhook режиме нам не нужен updater, но нужно убедиться, что обработчики активны
-                        # Проверяем, что обработчики зарегистрированы
-                        try:
-                            handlers_count = 0
-                            for i, group in enumerate(application.handlers):
-                                # Проверяем, что group является итерируемым (список, tuple) и не пустой
-                                if group and hasattr(group, '__iter__') and not isinstance(group, (str, bytes)):
-                                    try:
-                                        group_len = len(group)
-                                        handlers_count += group_len
-                                        logger.info(f"   Группа {i}: {group_len} обработчиков")
-                                        for handler in group:
-                                            logger.info(f"      - {type(handler).__name__}")
-                                    except (TypeError, AttributeError) as e:
-                                        logger.warning(f"   Группа {i}: не удалось обработать ({type(group).__name__}): {e}")
-                                else:
-                                    logger.debug(f"   Группа {i}: пропущена (тип: {type(group).__name__})")
-                            logger.info(f"✅ Зарегистрировано обработчиков: {handlers_count}")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Ошибка при подсчете обработчиков: {e}, но продолжаем работу")
-                        
-                        # Сигнализируем, что Application готов к обработке обновлений
-                        application_ready_event.set()
-                        logger.info("✅ Application готов к обработке обновлений")
-                        
-                        # Обновления обрабатываются напрямую в telegram_webhook через process_update()
-                        # в отдельных потоках с собственными event loops
-                        
-                        # Держим Application запущенным, проверяя shutdown_event
-                        shutdown_evt = asyncio.Event()
-                        
-                        # Мониторим shutdown_event в фоновой задаче
-                        async def check_shutdown():
-                            while not shutdown_event.is_set():
-                                await asyncio.sleep(1)
-                            shutdown_evt.set()
-                        
-                        asyncio.create_task(check_shutdown())
-                        await shutdown_evt.wait()  # Ждем сигнала остановки
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Ошибка при запуске Application: {e}", exc_info=True)
-                        raise
-                    finally:
-                        # Останавливаем Application
-                        try:
-                            if hasattr(application, 'running') and application.running:
-                                await application.stop()
-                                await application.shutdown()
-                        except Exception as e:
-                            logger.warning(f"⚠️  Ошибка при остановке Application: {e}")
-                
-                # Запускаем Application в event loop
-                loop.run_until_complete(run_application())
-                
-            except Exception as e:
-                logger.error(f"❌ Критическая ошибка в потоке Application: {e}", exc_info=True)
-            finally:
-                if loop is not None:
-                    try:
-                        if not loop.is_closed():
-                            loop.close()
-                    except Exception as e:
-                        logger.warning(f"⚠️  Ошибка при закрытии loop: {e}")
-        
-        # Запускаем Application в отдельном потоке
-        global app_thread
-        app_thread = threading.Thread(target=application_runner_thread, daemon=False)
-        app_thread.start()
-        logger.info("✅ Поток Application запущен")
-        
-        logger.info("✅ Бот запущен в режиме WEBHOOK и готов к работе!")
-        logger.info("   Webhook сервер запущен и ожидает обновления от Telegram")
-        
-        # Регистрируем обработчики сигналов для корректного завершения
+        # Регистрируем обработчики сигналов
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
         atexit.register(cleanup_bot)
         
-        logger.info("✅ Обработчики сигналов зарегистрированы (SIGTERM, SIGINT)")
+        # Создаем async webhook server на aiohttp для обработки Telegram и YooKassa
+        async def telegram_webhook_handler(request):
+            """Обработчик webhook от Telegram"""
+            try:
+                update_data = await request.json()
+                update = Update.de_json(update_data, application.bot)
+                if update:
+                    # Обрабатываем обновление через Application
+                    await application.process_update(update)
+                    return web.Response(text='ok', status=200)
+                return web.Response(text='Invalid update', status=400)
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обработке webhook от Telegram: {e}", exc_info=True)
+                return web.Response(text='Error', status=500)
         
-        # Держим основной поток живым
+        async def yookassa_webhook_handler(request):
+            """Обработчик webhook от YooKassa"""
+            try:
+                event_data = await request.json()
+                if not event_data:
+                    return web.Response(text='Empty request', status=400)
+                
+                event_type = event_data.get('event')
+                payment_object = event_data.get('object', {})
+                
+                logger.info(f"🔔 Получен webhook от ЮKassa: event={event_type}, payment_id={payment_object.get('id')}")
+                
+                if event_type == 'payment.succeeded':
+                    yookassa_payment_id = payment_object.get('id')
+                    metadata = payment_object.get('metadata', {})
+                    user_id = metadata.get('user_id')
+                    
+                    if user_id:
+                        user_id = int(user_id)
+                        update_payment_status(yookassa_payment_id, payment_object.get('status'), payment_object)
+                        mark_user_paid(user_id)
+                        
+                        log_event(user_id, 'payment_success', {
+                            'yookassa_payment_id': yookassa_payment_id,
+                            'amount': payment_object.get('amount', {}).get('value'),
+                            'source': 'webhook'
+                        })
+                        
+                        # Обрабатываем платеж асинхронно
+                        await process_payment_async(user_id, application)
+                
+                elif event_type == 'payment.canceled':
+                    yookassa_payment_id = payment_object.get('id')
+                    metadata = payment_object.get('metadata', {})
+                    user_id = metadata.get('user_id')
+                    if user_id:
+                        log_event(int(user_id), 'payment_canceled', {
+                            'yookassa_payment_id': yookassa_payment_id,
+                            'source': 'webhook'
+                        })
+                    update_payment_status(yookassa_payment_id, payment_object.get('status'), payment_object)
+                
+                return web.Response(text='ok', status=200)
+            except Exception as e:
+                logger.error(f"❌ Ошибка при обработке webhook от ЮKassa: {e}", exc_info=True)
+                return web.Response(text='Error', status=500)
+        
+        async def health_handler(request):
+            """Health check endpoint"""
+            return web.Response(text='ok', status=200)
+        
+        # Создаем aiohttp приложение
+        aioapp = web.Application()
+        aioapp.router.add_post(webhook_path, telegram_webhook_handler)
+        if yookassa_webhook_url:
+            aioapp.router.add_post('/webhook/yookassa', yookassa_webhook_handler)
+        aioapp.router.add_get('/health', health_handler)
+        aioapp.router.add_get('/', health_handler)
+        
+        # Запускаем Application и webhook server в одном event loop
+        async def run_bot():
+            """Запускает Application и webhook server"""
+            # Инициализируем Application
+            await application.initialize()
+            logger.info("✅ Application инициализирован")
+            
+            # Устанавливаем webhook в Telegram
+            try:
+                result = await application.bot.set_webhook(
+                    url=telegram_webhook_url,
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True
+                )
+                if result:
+                    logger.info("✅ Webhook успешно установлен в Telegram")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка при установке webhook: {e}")
+            
+            # Запускаем Application
+            await application.start()
+            logger.info("✅ Application запущен")
+            
+            # Запускаем aiohttp webhook server
+            runner = web.AppRunner(aioapp)
+            await runner.setup()
+            site = web.TCPSite(runner, '0.0.0.0', port)
+            await site.start()
+            logger.info(f"✅ Webhook server запущен на порту {port}")
+            logger.info(f"   Telegram webhook path: {webhook_path}")
+            if yookassa_webhook_url:
+                logger.info(f"   YooKassa webhook path: /webhook/yookassa")
+            
+            # Ждем сигнала остановки
+            shutdown_evt = asyncio.Event()
+            async def check_shutdown():
+                while not shutdown_event.is_set():
+                    await asyncio.sleep(1)
+                shutdown_evt.set()
+            
+            asyncio.create_task(check_shutdown())
+            await shutdown_evt.wait()
+            
+            # Останавливаем
+            await site.stop()
+            await runner.cleanup()
+            await application.stop()
+            await application.shutdown()
+        
+        # Запускаем в event loop
         try:
-            while not shutdown_event.is_set():
-                time.sleep(1)  # Проверяем каждую секунду
+            asyncio.run(run_bot())
         except KeyboardInterrupt:
-            logger.info("📡 Получен KeyboardInterrupt, запускаем корректное завершение...")
-            cleanup_bot()
+            logger.info("📡 Получен KeyboardInterrupt, завершаем работу...")
+            shutdown_event.set()
     else:
         # Режим POLLING (для разработки/тестирования)
         logger.info("🔄 Запуск бота в режиме POLLING")
