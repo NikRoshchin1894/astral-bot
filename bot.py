@@ -727,9 +727,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.args and len(context.args) > 0:
         start_param = context.args[0]
     
-    # ВАЖНО: YooKassa всегда использует return_url (с payment_cancel) при возврате пользователя,
-    # даже если платеж успешен. Поэтому ВСЕГДА проверяем статус последнего платежа,
-    # независимо от параметра start_param
+    # ПРИМЕЧАНИЕ: return_url теперь открывает бота без параметров.
+    # Генерация натальной карты запускается автоматически через webhook YooKassa.
+    # Эта логика оставлена для совместимости, если пользователь перейдет по ссылке с параметрами вручную.
     if start_param in ['payment_success', 'payment_cancel']:
         logger.info(f"🔍 Пользователь {user_id} вернулся после оплаты (start_param={start_param}), проверяем статус платежа")
         
@@ -2397,19 +2397,21 @@ def create_yookassa_payment_link(user_id: int, amount_rub: float, description: s
     if success_url_env:
         success_url = success_url_env
     elif bot_username:
-        success_url = f'https://t.me/{bot_username}?start=payment_success'
+        # Просто открываем бота без параметров - генерация уже запускается через webhook автоматически
+        success_url = f'https://t.me/{bot_username}'
     else:
         logger.error("❌ PAYMENT_SUCCESS_URL и TELEGRAM_BOT_USERNAME не установлены!")
         logger.error("❌ Не могу создать корректный URL для возврата после оплаты")
         # Используем заглушку как fallback
-        success_url = 'https://t.me/your_bot?start=payment_success'
+        success_url = 'https://t.me/your_bot'
     
     if return_url_env:
         return_url = return_url_env
     elif bot_username:
-        return_url = f'https://t.me/{bot_username}?start=payment_cancel'
+        # Просто открываем бота без параметров - генерация уже запускается через webhook автоматически
+        return_url = f'https://t.me/{bot_username}'
     else:
-        return_url = 'https://t.me/your_bot?start=payment_cancel'
+        return_url = 'https://t.me/your_bot'
     
     logger.info(f"🔗 Success URL: {success_url}")
     logger.info(f"🔗 Return URL: {return_url}")
