@@ -4263,17 +4263,39 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени")
         except Exception as show_error:
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
-            # Если не удалось показать профиль, показываем сообщение с кнопкой для просмотра профиля
+            # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
             try:
-                await update.message.reply_text(
-                    "Профиль обновлен.",
-                    reply_markup=InlineKeyboardMarkup([[
-                        InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
-                        InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                    ]])
-                )
+                loaded_data = load_user_profile(user_id)
+                if loaded_data:
+                    profile_text, keyboard = get_profile_message_and_buttons(user_id, loaded_data)
+                    await update.message.reply_text(
+                        profile_text,
+                        reply_markup=keyboard,
+                        parse_mode='Markdown'
+                    )
+                    logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени (fallback)")
+                else:
+                    # Если не удалось загрузить из базы, показываем сообщение с кнопкой для просмотра профиля
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
             except Exception as fallback_error:
                 logger.error(f"❌ Критическая ошибка: не удалось отправить сообщение пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Последняя попытка - просто сообщение
+                try:
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
+                except:
+                    pass
     
     elif state == 'edit_date':
         user_id = update.message.from_user.id
@@ -4296,14 +4318,39 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             await show_profile_message(update, user_data)
         except Exception as show_error:
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
-            # Если не удалось показать профиль, показываем главное меню
-            await update.message.reply_text(
-                "Профиль обновлен.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                ]])
-            )
+            # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
+            try:
+                loaded_data = load_user_profile(user_id)
+                if loaded_data:
+                    profile_text, keyboard = get_profile_message_and_buttons(user_id, loaded_data)
+                    await update.message.reply_text(
+                        profile_text,
+                        reply_markup=keyboard,
+                        parse_mode='Markdown'
+                    )
+                    logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования даты (fallback)")
+                else:
+                    # Если не удалось загрузить из базы, показываем сообщение с кнопкой для просмотра профиля
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
+            except Exception as fallback_error:
+                logger.error(f"❌ Критическая ошибка при показе профиля пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Последняя попытка - просто сообщение
+                try:
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
+                except:
+                    pass
     
     elif state == 'edit_time':
         user_id = update.message.from_user.id
@@ -4326,14 +4373,39 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             await show_profile_message(update, user_data)
         except Exception as show_error:
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
-            # Если не удалось показать профиль, показываем главное меню
-            await update.message.reply_text(
-                "Профиль обновлен.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                ]])
-            )
+            # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
+            try:
+                loaded_data = load_user_profile(user_id)
+                if loaded_data:
+                    profile_text, keyboard = get_profile_message_and_buttons(user_id, loaded_data)
+                    await update.message.reply_text(
+                        profile_text,
+                        reply_markup=keyboard,
+                        parse_mode='Markdown'
+                    )
+                    logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования времени (fallback)")
+                else:
+                    # Если не удалось загрузить из базы, показываем сообщение с кнопкой для просмотра профиля
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
+            except Exception as fallback_error:
+                logger.error(f"❌ Критическая ошибка при показе профиля пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Последняя попытка - просто сообщение
+                try:
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
+                except:
+                    pass
     
     elif state == 'edit_place':
         user_id = update.message.from_user.id
@@ -4356,14 +4428,39 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             await show_profile_message(update, user_data)
         except Exception as show_error:
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
-            # Если не удалось показать профиль, показываем главное меню
-            await update.message.reply_text(
-                "Профиль обновлен.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
-                    InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-                ]])
-            )
+            # Если не удалось показать профиль, пытаемся загрузить из базы и показать снова
+            try:
+                loaded_data = load_user_profile(user_id)
+                if loaded_data:
+                    profile_text, keyboard = get_profile_message_and_buttons(user_id, loaded_data)
+                    await update.message.reply_text(
+                        profile_text,
+                        reply_markup=keyboard,
+                        parse_mode='Markdown'
+                    )
+                    logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования места (fallback)")
+                else:
+                    # Если не удалось загрузить из базы, показываем сообщение с кнопкой для просмотра профиля
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
+            except Exception as fallback_error:
+                logger.error(f"❌ Критическая ошибка при показе профиля пользователю {user_id}: {fallback_error}", exc_info=True)
+                # Последняя попытка - просто сообщение
+                try:
+                    await update.message.reply_text(
+                        "Профиль обновлен.",
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
+                            InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
+                        ]])
+                    )
+                except:
+                    pass
 
 
 def get_coordinates_from_place(place_str: str) -> Tuple[Optional[float], Optional[float]]:
