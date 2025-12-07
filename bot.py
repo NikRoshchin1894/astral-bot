@@ -473,6 +473,27 @@ def save_user_profile(user_id, user_data):
     })
 
 
+def is_profile_complete(user_data_or_profile):
+    """
+    Проверяет, заполнен ли профиль пользователя полностью.
+    
+    Args:
+        user_data_or_profile: dict с данными профиля (может быть user_data или результат load_user_profile)
+    
+    Returns:
+        bool: True если все необходимые поля заполнены и не пустые
+    """
+    if not user_data_or_profile:
+        return False
+    
+    required_fields = ['birth_name', 'birth_date', 'birth_time', 'birth_place']
+    for field in required_fields:
+        value = user_data_or_profile.get(field)
+        if not value or (isinstance(value, str) and not value.strip()):
+            return False
+    return True
+
+
 def load_user_profile(user_id):
     """Загрузка профиля пользователя из базы данных"""
     conn, db_type = get_db_connection()
@@ -775,7 +796,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if loaded_data:
                             user_data.update(loaded_data)
                     
-                    has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+                    has_profile = is_profile_complete(user_data)
                     
                     if has_profile:
                         # Профиль заполнен - запускаем генерацию сразу
@@ -818,7 +839,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                     if loaded_data:
                                         user_data.update(loaded_data)
                                 
-                                has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+                                has_profile = is_profile_complete(user_data)
                                 
                                 if has_profile:
                                     # Профиль заполнен - запускаем генерацию сразу
@@ -1267,12 +1288,7 @@ async def handle_planets_request(query, context):
     profile = load_user_profile(user_id)
     
     # Проверяем наличие всех необходимых данных
-    has_profile = profile and all([
-        profile.get('birth_name'), 
-        profile.get('birth_date'), 
-        profile.get('birth_time'), 
-        profile.get('birth_place')
-    ])
+    has_profile = is_profile_complete(profile)
     
     if not has_profile:
         # Логируем попытку запроса без профиля
@@ -1378,7 +1394,7 @@ def get_profile_message_and_buttons(user_id, user_data):
             logger.warning(f"⚠️ Ошибка при загрузке профиля пользователя {user_id} в get_profile_message_and_buttons: {load_error}")
             # Продолжаем с переданными данными
     
-    has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+    has_profile = is_profile_complete(user_data)
     
     if has_profile:
         profile_text = f'''📋 *Данные о рождении*
@@ -1708,7 +1724,7 @@ async def handle_natal_chart_request(query, context):
         if loaded_data:
             user_data.update(loaded_data)
     
-    has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+    has_profile = is_profile_complete(user_data)
     
     if not has_profile:
         # Логируем попытку запроса натальной карты без профиля
@@ -2888,7 +2904,7 @@ async def check_and_process_pending_payment(user_id: int, context_or_application
                     if loaded_data:
                         user_data.update(loaded_data)
                 
-                has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+                has_profile = is_profile_complete(user_data)
                 
                 if has_profile:
                     await handle_natal_chart_request_from_payment(user_id, context)
@@ -2947,7 +2963,7 @@ async def check_and_process_pending_payment(user_id: int, context_or_application
                 if loaded_data:
                     user_data.update(loaded_data)
             
-            has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+            has_profile = is_profile_complete(user_data)
             
             if has_profile:
                 # Запускаем генерацию натальной карты
@@ -4232,11 +4248,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени")
         except Exception as show_error:
             logger.error(f"❌ Ошибка при показе профиля пользователя {user_id}: {show_error}", exc_info=True)
-            # Отправляем простое сообщение об успехе, если не удалось показать профиль
+            # Если не удалось показать профиль, показываем главное меню
             try:
                 await update.message.reply_text(
-                    f"✅ Имя успешно сохранено: {text}\n\n"
-                    "Профиль обновлен. Используйте кнопки меню для дальнейших действий.",
+                    "Профиль обновлен.",
                     reply_markup=InlineKeyboardMarkup([[
                         InlineKeyboardButton("📋 Данные о рождении", callback_data='my_profile'),
                         InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
@@ -5057,7 +5072,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
         if loaded_data:
             user_data.update(loaded_data)
     
-    has_profile = all(key in user_data for key in ['birth_name', 'birth_date', 'birth_time', 'birth_place'])
+    has_profile = is_profile_complete(user_data)
     
     if not has_profile:
         # Если профиль не заполнен, показываем сообщение о необходимости заполнить данные
