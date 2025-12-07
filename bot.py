@@ -5670,6 +5670,16 @@ def main():
                         global telegram_application, application_ready_event
                         telegram_application = application
                         
+                        # В webhook режиме нам не нужен updater, но нужно убедиться, что обработчики активны
+                        # Проверяем, что обработчики зарегистрированы
+                        handlers_count = sum(len(group) for group in application.handlers)
+                        logger.info(f"✅ Зарегистрировано обработчиков: {handlers_count}")
+                        for i, group in enumerate(application.handlers):
+                            if group:
+                                logger.info(f"   Группа {i}: {len(group)} обработчиков")
+                                for handler in group:
+                                    logger.info(f"      - {type(handler).__name__}")
+                        
                         # Сигнализируем, что Application готов к обработке обновлений
                         application_ready_event.set()
                         logger.info("✅ Application готов к обработке обновлений")
