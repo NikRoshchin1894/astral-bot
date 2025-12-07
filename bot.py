@@ -4620,8 +4620,34 @@ def format_natal_chart_data(chart_data: dict) -> str:
 def generate_natal_chart_with_gpt(birth_data, api_key):
     """Генерация натальной карты с помощью OpenAI GPT и преобразование текста в PDF."""
 
+    # Поддержка прокси для обхода географических ограничений
+    import httpx
+    http_client = None
+    
+    # Проверяем наличие прокси в переменных окружения
+    proxy_url = os.getenv('OPENAI_PROXY_URL') or os.getenv('HTTP_PROXY') or os.getenv('HTTPS_PROXY')
+    
+    if proxy_url:
+        logger.info(f"🌐 Использование прокси для OpenAI: {proxy_url[:50]}...")
+        # Создаем HTTP клиент с прокси
+        http_client = httpx.Client(
+            proxies=proxy_url,
+            timeout=httpx.Timeout(180.0, connect=30.0),
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+        )
+    else:
+        logger.info("ℹ️ Прокси не настроен, используется прямое подключение к OpenAI")
+
     # Увеличенный таймаут на случай длинных ответов
-    client = OpenAI(api_key=api_key, timeout=180)
+    client_kwargs = {
+        'api_key': api_key,
+        'timeout': 180
+    }
+    
+    if http_client:
+        client_kwargs['http_client'] = http_client
+    
+    client = OpenAI(**client_kwargs)
     
     # Расчет натальной карты через Swiss Ephemeris
     try:
@@ -4695,8 +4721,24 @@ def generate_natal_chart_with_gpt(birth_data, api_key):
                             return content
                 except Exception as e:
                     last_err = e
+                    # Проверяем специфичные ошибки OpenAI
+                    error_str = str(e)
+                    if 'unsupported_country_region_territory' in error_str or '403' in error_str:
+                        logger.error(f"❌ OpenAI заблокировал запрос из-за ограничений региона: {e}")
+                        raise RuntimeError(
+                            "OpenAI API заблокирован в вашем регионе. "
+                            "Настройте прокси-сервер через переменную окружения OPENAI_PROXY_URL, HTTP_PROXY или HTTPS_PROXY. "
+                            f"Ошибка: {error_str}"
+                        ) from e
                     logger.warning(f"OpenAI ошибка (max_tokens={max_t}): {e}; повтор...")
                     time.sleep(1.0)
+            if last_err:
+                error_str = str(last_err)
+                if 'unsupported_country_region_territory' in error_str or '403' in error_str:
+                    raise RuntimeError(
+                        "OpenAI API заблокирован в вашем регионе. "
+                        "Настройте прокси-сервер через переменную окружения OPENAI_PROXY_URL, HTTP_PROXY или HTTPS_PROXY."
+                    ) from last_err
             raise last_err or RuntimeError("Не удалось получить ответ от OpenAI")
 
         example_from_file = load_prompt_example()
