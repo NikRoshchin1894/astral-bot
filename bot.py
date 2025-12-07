@@ -1409,12 +1409,28 @@ async def my_profile(query, context):
 async def show_profile_message(update, user_data):
     """Показывает сообщение с профилем через обычное сообщение (не через query)"""
     user_id = update.message.from_user.id
-    profile_text, keyboard = get_profile_message_and_buttons(user_id, user_data)
-    await update.message.reply_text(
-        profile_text,
-        reply_markup=keyboard,
-        parse_mode='Markdown'
-    )
+    
+    # Обновляем user_data данными из базы для актуальности
+    try:
+        loaded_data = load_user_profile(user_id)
+        if loaded_data:
+            # Объединяем: сначала данные из базы, потом переданные (переданные имеют приоритет)
+            user_data = {**loaded_data, **user_data}
+    except Exception as load_error:
+        logger.warning(f"⚠️ Ошибка при загрузке профиля пользователя {user_id} из базы: {load_error}")
+        # Продолжаем с переданными данными
+    
+    try:
+        profile_text, keyboard = get_profile_message_and_buttons(user_id, user_data)
+        await update.message.reply_text(
+            profile_text,
+            reply_markup=keyboard,
+            parse_mode='Markdown'
+        )
+        logger.info(f"✅ Профиль успешно показан пользователю {user_id}")
+    except Exception as show_error:
+        logger.error(f"❌ Ошибка при показе профиля пользователю {user_id}: {show_error}", exc_info=True)
+        raise
 
 
 async def select_edit_field(query, context):
@@ -4176,11 +4192,6 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
         
         # Показываем профиль
         try:
-            # Обновляем user_data из базы, чтобы получить актуальные данные
-            loaded_data = load_user_profile(user_id)
-            if loaded_data:
-                user_data.update(loaded_data)
-            
             await show_profile_message(update, user_data)
             logger.info(f"✅ Профиль пользователя {user_id} успешно показан после редактирования имени")
         except Exception as show_error:
