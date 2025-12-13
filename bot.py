@@ -4291,10 +4291,10 @@ async def handle_natal_chart_input(update: Update, context: ContextTypes.DEFAULT
             "✅ *Профиль успешно сохранен!*\n\n"
             "Теперь вы можете получить свою натальную карту.",
             parse_mode='Markdown',
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("📜 Получить карту", callback_data='natal_chart'),
-                InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu'),
-            ]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📜 Получить натальную карту", callback_data='natal_chart')],
+                [InlineKeyboardButton("🏠 Главное меню", callback_data='back_menu')],
+            ])
         )
         
         user_data.pop('natal_chart_state', None)

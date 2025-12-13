@@ -11,6 +11,7 @@ import psycopg2
 import sqlite3
 from dotenv import load_dotenv
 from datetime import datetime
+import pytz
 
 load_dotenv()
 
@@ -37,122 +38,194 @@ def get_db_connection():
     else:
         return sqlite3.connect(DATABASE), 'sqlite'
 
-def get_funnel_stats(db_type, cursor):
-    """Получает статистику воронки"""
+def get_funnel_stats(db_type, cursor, date_filter=None):
+    """Получает статистику воронки
+    
+    Args:
+        db_type: Тип БД ('postgresql' или 'sqlite')
+        cursor: Курсор БД
+        date_filter: Дата для фильтрации в формате 'YYYY-MM-DD' (опционально)
+                     Фильтрация происходит по московскому времени (UTC+3)
+    """
     stats = {}
+    
+    # Формируем условие фильтрации по дате (по московскому времени)
+    if date_filter:
+        # timestamp хранится в формате ISO без часового пояса (предположительно в UTC или MSK)
+        # Для фильтрации по московскому времени используем диапазон дат с учетом смещения
+        if db_type == 'postgresql':
+            # PostgreSQL: конвертируем timestamp в московское время
+            # Если timestamp без TZ, считаем что это UTC и конвертируем в MSK
+            # MSK = UTC+3, поэтому начало дня в MSK = начало дня UTC - 3 часа
+            date_condition = """AND (
+                (timestamp::timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow')::date = %s::date
+            )"""
+            date_params = (date_filter,)
+        else:
+            # SQLite: timestamp хранится как ISO строка
+            # Создаем временные метки начала и конца дня по московскому времени
+            moscow_tz = pytz.timezone('Europe/Moscow')
+            date_start_msk = moscow_tz.localize(datetime.strptime(f"{date_filter} 00:00:00", "%Y-%m-%d %H:%M:%S"))
+            date_end_msk = moscow_tz.localize(datetime.strptime(f"{date_filter} 23:59:59.999", "%Y-%m-%d %H:%M:%S.%f"))
+            # Конвертируем в UTC для сравнения (если timestamp в UTC)
+            date_start_utc = date_start_msk.astimezone(pytz.UTC).isoformat()
+            date_end_utc = date_end_msk.astimezone(pytz.UTC).isoformat()
+            date_condition = "AND timestamp >= ? AND timestamp <= ?"
+            date_params = (date_start_utc, date_end_utc)
+    else:
+        date_condition = ""
+        date_params = ()
     
     # Уникальные пользователи на каждом этапе
     if db_type == 'postgresql':
         # Старт
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('start',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('start',) + date_params if date_filter else ('start',))
         stats['start'] = cursor.fetchone()[0]
         
         # Заполнение профиля
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('profile_complete',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('profile_complete',) + date_params if date_filter else ('profile_complete',))
         stats['profile_complete'] = cursor.fetchone()[0]
         
         # Начало оплаты
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('payment_start',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('payment_start',) + date_params if date_filter else ('payment_start',))
         stats['payment_start'] = cursor.fetchone()[0]
         
         # Успешная оплата
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('payment_success',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('payment_success',) + date_params if date_filter else ('payment_success',))
         stats['payment_success'] = cursor.fetchone()[0]
         
         # Начало генерации
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('natal_chart_generation_start',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('natal_chart_generation_start',) + date_params if date_filter else ('natal_chart_generation_start',))
         stats['natal_chart_generation_start'] = cursor.fetchone()[0]
         
         # Успешная генерация
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('natal_chart_success',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('natal_chart_success',) + date_params if date_filter else ('natal_chart_success',))
         stats['natal_chart_success'] = cursor.fetchone()[0]
         
         # Ошибки генерации
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('natal_chart_error',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('natal_chart_error',) + date_params if date_filter else ('natal_chart_error',))
         stats['natal_chart_error'] = cursor.fetchone()[0]
         
         # Просмотр "Положение планет"
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('planets_info_viewed',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('planets_info_viewed',) + date_params if date_filter else ('planets_info_viewed',))
         stats['planets_info_viewed'] = cursor.fetchone()[0]
         
         # Запрос данных о планетах
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('planets_data_requested',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('planets_data_requested',) + date_params if date_filter else ('planets_data_requested',))
         stats['planets_data_requested'] = cursor.fetchone()[0]
         
         # Обращения в поддержку
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s', ('support_contacted',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = %s {date_condition}', 
+                      ('support_contacted',) + date_params if date_filter else ('support_contacted',))
         stats['support_contacted'] = cursor.fetchone()[0]
         
         # Всего уникальных пользователей
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events')
+        if date_filter:
+            cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE 1=1 {date_condition}', date_params)
+        else:
+            cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events')
         stats['total_users'] = cursor.fetchone()[0]
         
-        # Всего уникальных пользователей с профилем
+        # Всего уникальных пользователей с профилем (без фильтра по дате, т.к. это состояние, а не событие)
         cursor.execute('SELECT COUNT(DISTINCT user_id) FROM users WHERE birth_date IS NOT NULL')
         stats['users_with_profile'] = cursor.fetchone()[0]
         
         # Всего платежей (количество)
-        cursor.execute('SELECT COUNT(*) FROM events WHERE event_type = %s', ('payment_success',))
+        cursor.execute(f'SELECT COUNT(*) FROM events WHERE event_type = %s {date_condition}', 
+                      ('payment_success',) + date_params if date_filter else ('payment_success',))
         stats['total_payments'] = cursor.fetchone()[0]
         
         # Сумма всех платежей
-        cursor.execute('''
-            SELECT SUM((event_data::json->>'total_amount')::int) 
-            FROM events 
-            WHERE event_type = %s AND event_data IS NOT NULL
-        ''', ('payment_success',))
+        if date_filter:
+            cursor.execute(f'''
+                SELECT SUM((event_data::json->>'total_amount')::int) 
+                FROM events 
+                WHERE event_type = %s AND event_data IS NOT NULL {date_condition}
+            ''', ('payment_success',) + date_params)
+        else:
+            cursor.execute('''
+                SELECT SUM((event_data::json->>'total_amount')::int) 
+                FROM events 
+                WHERE event_type = %s AND event_data IS NOT NULL
+            ''', ('payment_success',))
         result = cursor.fetchone()[0]
         stats['total_revenue'] = (result or 0) / 100  # Конвертируем из копеек в рубли
         
     else:
         # SQLite версия
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('start',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('start',) + date_params if date_filter else ('start',))
         stats['start'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('profile_complete',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('profile_complete',) + date_params if date_filter else ('profile_complete',))
         stats['profile_complete'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('payment_start',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('payment_start',) + date_params if date_filter else ('payment_start',))
         stats['payment_start'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('payment_success',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('payment_success',) + date_params if date_filter else ('payment_success',))
         stats['payment_success'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('natal_chart_generation_start',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('natal_chart_generation_start',) + date_params if date_filter else ('natal_chart_generation_start',))
         stats['natal_chart_generation_start'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('natal_chart_success',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('natal_chart_success',) + date_params if date_filter else ('natal_chart_success',))
         stats['natal_chart_success'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('natal_chart_error',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('natal_chart_error',) + date_params if date_filter else ('natal_chart_error',))
         stats['natal_chart_error'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('planets_info_viewed',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('planets_info_viewed',) + date_params if date_filter else ('planets_info_viewed',))
         stats['planets_info_viewed'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('planets_data_requested',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('planets_data_requested',) + date_params if date_filter else ('planets_data_requested',))
         stats['planets_data_requested'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ?', ('support_contacted',))
+        cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE event_type = ? {date_condition}', 
+                      ('support_contacted',) + date_params if date_filter else ('support_contacted',))
         stats['support_contacted'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events')
+        if date_filter:
+            cursor.execute(f'SELECT COUNT(DISTINCT user_id) FROM events WHERE 1=1 {date_condition}', date_params)
+        else:
+            cursor.execute('SELECT COUNT(DISTINCT user_id) FROM events')
         stats['total_users'] = cursor.fetchone()[0]
         
         cursor.execute('SELECT COUNT(DISTINCT user_id) FROM users WHERE birth_date IS NOT NULL')
         stats['users_with_profile'] = cursor.fetchone()[0]
         
-        cursor.execute('SELECT COUNT(*) FROM events WHERE event_type = ?', ('payment_success',))
+        cursor.execute(f'SELECT COUNT(*) FROM events WHERE event_type = ? {date_condition}', 
+                      ('payment_success',) + date_params if date_filter else ('payment_success',))
         stats['total_payments'] = cursor.fetchone()[0]
         
         stats['total_revenue'] = 0  # SQLite сложнее парсить JSON
     
     return stats
 
-def print_funnel(stats):
+def print_funnel(stats, date_filter=None):
     """Выводит воронку конверсии"""
     print("\n" + "="*80)
-    print("📊 ВОРОНКА КОНВЕРСИИ ПО ВСЕМ ПОЛЬЗОВАТЕЛЯМ")
+    if date_filter:
+        print(f"📊 ВОРОНКА КОНВЕРСИИ ЗА {date_filter}")
+    else:
+        print("📊 ВОРОНКА КОНВЕРСИИ ПО ВСЕМ ПОЛЬЗОВАТЕЛЯМ")
     print("="*80)
     
     # Основная воронка
@@ -162,7 +235,7 @@ def print_funnel(stats):
     steps = [
         ('Старт (start)', 'start'),
         ('Заполнение профиля', 'profile_complete'),
-        ('Начало оплаты', 'payment_start'),
+        ('Переход на экран получения карты', 'payment_start'),
         ('Успешная оплата', 'payment_success'),
         ('Начало генерации карты', 'natal_chart_generation_start'),
         ('Успешная генерация карты', 'natal_chart_success'),
@@ -248,6 +321,20 @@ def print_funnel(stats):
     print("\n" + "="*80)
 
 def main():
+    import sys
+    
+    # Получаем дату из аргументов командной строки или используем по умолчанию
+    date_filter = None
+    if len(sys.argv) > 1:
+        date_filter = sys.argv[1]
+        # Проверяем формат даты
+        try:
+            datetime.strptime(date_filter, '%Y-%m-%d')
+        except ValueError:
+            print(f"❌ Неверный формат даты: {date_filter}")
+            print("Используйте формат: YYYY-MM-DD (например: 2025-12-08)")
+            return
+    
     print("🔌 Подключение к базе данных...")
     conn, db_type = get_db_connection()
     
@@ -256,11 +343,14 @@ def main():
     else:
         print("✅ Используется локальный SQLite")
     
+    if date_filter:
+        print(f"📅 Фильтр по дате: {date_filter}")
+    
     cursor = conn.cursor()
     
     try:
-        stats = get_funnel_stats(db_type, cursor)
-        print_funnel(stats)
+        stats = get_funnel_stats(db_type, cursor, date_filter)
+        print_funnel(stats, date_filter)
     except Exception as e:
         print(f"❌ Ошибка при получении статистики: {e}")
         import traceback
