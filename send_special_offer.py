@@ -170,10 +170,17 @@ async def main():
     
     # Подтверждение
     print(f"\n⚠️ Будет отправлено сообщений: {len(users_to_send)}")
-    response = input("Продолжить? (yes/no): ")
-    if response.lower() not in ['yes', 'y', 'да', 'д']:
-        print("❌ Отменено пользователем")
-        return
+    
+    # Проверяем аргумент командной строки для автоматического подтверждения
+    auto_confirm = len(sys.argv) > 1 and sys.argv[1] in ['--yes', '-y', '--auto']
+    
+    if not auto_confirm:
+        response = input("Продолжить? (yes/no): ")
+        if response.lower() not in ['yes', 'y', 'да', 'д']:
+            print("❌ Отменено пользователем")
+            return
+    else:
+        print("✅ Автоматическое подтверждение (--yes)")
     
     # Подключаемся к базе для обновления флагов
     conn, db_type = get_db_connection()
