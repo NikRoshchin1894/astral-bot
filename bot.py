@@ -1120,6 +1120,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await back_to_menu(query)
         elif data == 'buy_natal_chart':
             await start_payment_process(query, context)
+        elif data == 'payment_299':
+            await start_payment_process(query, context, custom_price_rub=299)
         elif data == 'support':
             await show_support(query, context)
         elif data == 'planets_info':
@@ -1572,7 +1574,7 @@ async def select_edit_field(query, context):
     )
 
 
-async def start_payment_process(query, context):
+async def start_payment_process(query, context, custom_price_rub=None):
     """Начало процесса оплаты через ЮKassa (внешняя ссылка - сразу открывается выбор способов оплаты)"""
     user_id = query.from_user.id
     
@@ -1582,9 +1584,16 @@ async def start_payment_process(query, context):
     except Exception as answer_error:
         logger.warning(f"Не удалось ответить на callback query: {answer_error}")
     
+    # Определяем цену для пользователя
+    if custom_price_rub is not None:
+        price_rub = custom_price_rub
+        price_minor = custom_price_rub * 100
+    else:
+        price_rub, price_minor = get_user_price(user_id)
+    
     # Логируем начало процесса оплаты
     log_event(user_id, 'payment_start', {
-        'amount_rub': NATAL_CHART_PRICE_RUB,
+        'amount_rub': price_rub,
         'payment_provider': 'yookassa'
     })
     
@@ -1610,7 +1619,7 @@ async def start_payment_process(query, context):
         log_event(user_id, 'payment_error', {'error': 'yookassa_credentials_not_set'})
         return
     
-    logger.info(f"💰 Создание ссылки на оплату через ЮKassa: цена = {NATAL_CHART_PRICE_RUB} ₽")
+    logger.info(f"💰 Создание ссылки на оплату через ЮKassa: цена = {price_rub} ₽")
     
     try:
         # Выполняем запрос к ЮKassa в отдельном потоке, чтобы не блокировать event loop
@@ -1620,7 +1629,7 @@ async def start_payment_process(query, context):
             None,
             lambda: create_yookassa_payment_link(
                 user_id=user_id,
-                amount_rub=NATAL_CHART_PRICE_RUB,
+                amount_rub=price_rub,
                 description="Натальная карта - детальный астрологический разбор"
             )
         )
@@ -1653,6 +1662,7 @@ async def start_payment_process(query, context):
         
         await query.message.reply_text(
             f"*Оплата натальной карты*\n\n"
+            f"Сумма к оплате: *{price_rub} ₽*\n\n"
             f"Нажмите кнопку ниже, чтобы перейти к оплате.\n\n"
             f"*После оплаты сразу приступлю к подготовке отчета!*✨",
             reply_markup=payment_keyboard,
@@ -2443,6 +2453,58 @@ REPORTLAB_FONT_CANDIDATES = [
 
 NATAL_CHART_PRICE_RUB = 499
 NATAL_CHART_PRICE_MINOR = NATAL_CHART_PRICE_RUB * 100  # копейки для Telegram
+SPECIAL_PRICE_RUB = 299
+SPECIAL_PRICE_MINOR = SPECIAL_PRICE_RUB * 100  # копейки для Telegram
+
+
+def get_user_price(user_id):
+    """
+    Получает цену для пользователя (299 или 499 руб)
+    
+    Args:
+        user_id: ID пользователя Telegram
+    
+    Returns:
+        tuple: (price_rub, price_minor) - цена в рублях и в копейках
+    """
+    conn, db_type = get_db_connection()
+    cursor = conn.cursor()
+    
+    try:
+        if db_type == 'postgresql':
+            # Проверяем, есть ли колонка special_price_299
+            cursor.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='special_price_299'
+            """)
+            has_column = cursor.fetchone() is not None
+            
+            if has_column:
+                cursor.execute('SELECT special_price_299 FROM users WHERE user_id = %s', (user_id,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    conn.close()
+                    return (SPECIAL_PRICE_RUB, SPECIAL_PRICE_MINOR)
+        else:
+            # Проверяем, есть ли колонка special_price_299
+            cursor.execute("PRAGMA table_info(users)")
+            columns = [col[1] for col in cursor.fetchall()]
+            has_column = 'special_price_299' in columns
+            
+            if has_column:
+                cursor.execute('SELECT special_price_299 FROM users WHERE user_id = ?', (user_id,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    conn.close()
+                    return (SPECIAL_PRICE_RUB, SPECIAL_PRICE_MINOR)
+    except Exception as e:
+        logger.warning(f"⚠️ Ошибка при проверке специальной цены для пользователя {user_id}: {e}")
+    finally:
+        conn.close()
+    
+    # По умолчанию возвращаем стандартную цену
+    return (NATAL_CHART_PRICE_RUB, NATAL_CHART_PRICE_MINOR)
 
 
 def create_yookassa_payment_link(user_id: int, amount_rub: float, description: str = "Натальная карта") -> Optional[str]:
@@ -5321,13 +5383,17 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.answer(ok=False, error_message='Некорректный платежный запрос')
             return
         
-        # Проверяем сумму платежа
-        expected_amount = NATAL_CHART_PRICE_MINOR  # В копейках
-        if query.total_amount != expected_amount:
-            logger.warning(f"❌ Неверная сумма платежа: ожидалось {expected_amount}, получено {query.total_amount}")
+        # Проверяем сумму платежа (может быть 299 или 499 руб)
+        user_price_rub, user_price_minor = get_user_price(user_id)
+        expected_amount = user_price_minor  # В копейках
+        
+        # Также проверяем стандартную цену на случай, если пользователь оплачивает по обычной ссылке
+        if query.total_amount != expected_amount and query.total_amount != NATAL_CHART_PRICE_MINOR:
+            logger.warning(f"❌ Неверная сумма платежа: ожидалось {expected_amount} или {NATAL_CHART_PRICE_MINOR}, получено {query.total_amount}")
             log_event(user_id, 'payment_error', {
                 'error': 'invalid_amount',
                 'expected': expected_amount,
+                'expected_standard': NATAL_CHART_PRICE_MINOR,
                 'received': query.total_amount
             })
             await query.answer(ok=False, error_message='Неверная сумма платежа')
