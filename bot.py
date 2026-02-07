@@ -603,17 +603,26 @@ def log_event(user_id: int, event_type: str, event_data: Optional[dict] = None):
         # Не прерываем выполнение - логирование событий не критично для работы бота
 
 
+# Никнеймы с бесплатной генерацией (не списываем плату)
+FREE_GENERATION_USERNAMES = {'nina_swan'}
+
+
 def user_has_paid(user_id: int) -> bool:
     conn, db_type = get_db_connection()
     cursor = conn.cursor()
     
     if db_type == 'postgresql':
-        cursor.execute('SELECT has_paid FROM users WHERE user_id = %s', (user_id,))
+        cursor.execute('SELECT has_paid, username FROM users WHERE user_id = %s', (user_id,))
     else:
-        cursor.execute('SELECT has_paid FROM users WHERE user_id = ?', (user_id,))
+        cursor.execute('SELECT has_paid, username FROM users WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
     conn.close()
-    return bool(row[0]) if row else False
+    if not row:
+        return False
+    has_paid, username = row[0], (row[1] or '').strip()
+    if username and username.lstrip('@').lower() in FREE_GENERATION_USERNAMES:
+        return True
+    return bool(has_paid)
 
 
 def mark_user_paid(user_id: int):
