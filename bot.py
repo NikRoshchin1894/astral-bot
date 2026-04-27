@@ -56,7 +56,6 @@ from geopy.geocoders import Nominatim
 from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 from datetime import datetime, timezone, timedelta
 import pytz
-from timezonefinder import TimezoneFinder
 
 # Загружаем переменные окружения
 load_dotenv()
@@ -4759,20 +4758,14 @@ def calculate_natal_chart(birth_data: dict) -> dict:
         
         logger.info(f"Координаты места рождения: широта={lat}, долгота={lon}")
         
-        # Определение часового пояса по координатам
-        tf = TimezoneFinder()
-        try:
-            timezone_str = tf.timezone_at(lat=lat, lng=lon)
-            if timezone_str:
-                tz = pytz.timezone(timezone_str)
-                logger.info(f"Часовой пояс места рождения: {timezone_str}")
-            else:
-                # Если не удалось определить, используем UTC
-                logger.warning(f"Не удалось определить часовой пояс для {lat}, {lon}, используется UTC")
-                tz = pytz.UTC
-        except Exception as e:
-            logger.warning(f"Ошибка определения часового пояса: {e}, используется UTC")
-            tz = pytz.UTC
+        # Важно: timezonefinder может падать с segfault на некоторых сборках macOS/Python.
+        # Чтобы бот стабильно запускался и обрабатывал кнопки, используем безопасный fallback UTC.
+        tz = pytz.UTC
+        logger.info(
+            "Часовой пояс для координат %s, %s: используется UTC (без timezonefinder)",
+            lat,
+            lon,
+        )
         
         # Создание datetime объекта в локальном времени места рождения
         local_dt = tz.localize(datetime(year, month, day, hour, minute))
