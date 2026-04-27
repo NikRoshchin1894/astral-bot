@@ -76,3 +76,8 @@ python check_webhook_setup.py
 
 См. файл `YOOKASSA_WEBHOOK_SETUP.md` для детальной информации.
 
+
+
+
+
+

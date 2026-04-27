@@ -173,3 +173,8 @@ await application.bot.delete_webhook(drop_pending_updates=True)
 
 **После исправления бот должен работать без ошибок Conflict!** ✅
 
+
+
+
+
+

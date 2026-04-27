@@ -170,3 +170,8 @@
 - `sync_payment_statuses.py` - синхронизация статусов
 - `process_successful_payment.py` - обработка успешного платежа
 
+
+
+
+
+

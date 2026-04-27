@@ -57,3 +57,8 @@ telegram.error.NetworkError: Unknown error in HTTP implementation: RuntimeError(
 2. ✅ Генерация запускается в отдельном потоке
 3. ✅ Нет конфликтов с event loops
 
+
+
+
+
+

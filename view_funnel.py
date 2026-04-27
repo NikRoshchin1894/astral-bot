@@ -38,36 +38,40 @@ def get_db_connection():
     else:
         return sqlite3.connect(DATABASE), 'sqlite'
 
-def get_funnel_stats(db_type, cursor, date_filter=None):
+def get_funnel_stats(db_type, cursor, date_filter=None, date_filter_end=None):
     """Получает статистику воронки
     
     Args:
         db_type: Тип БД ('postgresql' или 'sqlite')
         cursor: Курсор БД
-        date_filter: Дата для фильтрации в формате 'YYYY-MM-DD' (опционально)
-                     Фильтрация происходит по московскому времени (UTC+3)
+        date_filter: Начало периода в формате 'YYYY-MM-DD' (опционально)
+        date_filter_end: Конец периода 'YYYY-MM-DD' (опционально). Если не задан при заданном date_filter — один день.
+                        Фильтрация по московскому времени (UTC+3).
     """
     stats = {}
-    
+    date_from = date_filter
+    date_to = date_filter_end if date_filter_end else date_filter
+
     # Формируем условие фильтрации по дате (по московскому времени)
-    if date_filter:
-        # timestamp хранится в формате ISO без часового пояса (предположительно в UTC или MSK)
-        # Для фильтрации по московскому времени используем диапазон дат с учетом смещения
+    if date_from:
         if db_type == 'postgresql':
-            # PostgreSQL: конвертируем timestamp в московское время
-            # Если timestamp без TZ, считаем что это UTC и конвертируем в MSK
-            # MSK = UTC+3, поэтому начало дня в MSK = начало дня UTC - 3 часа
-            date_condition = """AND (
-                (timestamp::timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow')::date = %s::date
-            )"""
-            date_params = (date_filter,)
+            # PostgreSQL: конвертируем timestamp в московское время (считаем что в БД без TZ = UTC)
+            if date_to and date_to != date_from:
+                date_condition = """AND (
+                    (timestamp::timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow')::date >= %s::date
+                    AND (timestamp::timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow')::date <= %s::date
+                )"""
+                date_params = (date_from, date_to)
+            else:
+                date_condition = """AND (
+                    (timestamp::timestamp AT TIME ZONE 'UTC' AT TIME ZONE 'Europe/Moscow')::date = %s::date
+                )"""
+                date_params = (date_from,)
         else:
-            # SQLite: timestamp хранится как ISO строка
-            # Создаем временные метки начала и конца дня по московскому времени
+            # SQLite: диапазон по UTC
             moscow_tz = pytz.timezone('Europe/Moscow')
-            date_start_msk = moscow_tz.localize(datetime.strptime(f"{date_filter} 00:00:00", "%Y-%m-%d %H:%M:%S"))
-            date_end_msk = moscow_tz.localize(datetime.strptime(f"{date_filter} 23:59:59.999", "%Y-%m-%d %H:%M:%S.%f"))
-            # Конвертируем в UTC для сравнения (если timestamp в UTC)
+            date_start_msk = moscow_tz.localize(datetime.strptime(f"{date_from} 00:00:00", "%Y-%m-%d %H:%M:%S"))
+            date_end_msk = moscow_tz.localize(datetime.strptime(f"{date_to or date_from} 23:59:59.999", "%Y-%m-%d %H:%M:%S.%f"))
             date_start_utc = date_start_msk.astimezone(pytz.UTC).isoformat()
             date_end_utc = date_end_msk.astimezone(pytz.UTC).isoformat()
             date_condition = "AND timestamp >= ? AND timestamp <= ?"
@@ -219,11 +223,14 @@ def get_funnel_stats(db_type, cursor, date_filter=None):
     
     return stats
 
-def print_funnel(stats, date_filter=None):
+def print_funnel(stats, date_filter=None, date_filter_end=None):
     """Выводит воронку конверсии"""
     print("\n" + "="*80)
     if date_filter:
-        print(f"📊 ВОРОНКА КОНВЕРСИИ ЗА {date_filter}")
+        if date_filter_end and date_filter_end != date_filter:
+            print(f"📊 ВОРОНКА КОНВЕРСИИ ЗА {date_filter} — {date_filter_end}")
+        else:
+            print(f"📊 ВОРОНКА КОНВЕРСИИ ЗА {date_filter}")
     else:
         print("📊 ВОРОНКА КОНВЕРСИИ ПО ВСЕМ ПОЛЬЗОВАТЕЛЯМ")
     print("="*80)
@@ -323,17 +330,24 @@ def print_funnel(stats, date_filter=None):
 def main():
     import sys
     
-    # Получаем дату из аргументов командной строки или используем по умолчанию
+    # Аргументы: одна дата (YYYY-MM-DD) или диапазон (YYYY-MM-DD YYYY-MM-DD)
     date_filter = None
+    date_filter_end = None
     if len(sys.argv) > 1:
         date_filter = sys.argv[1]
-        # Проверяем формат даты
         try:
             datetime.strptime(date_filter, '%Y-%m-%d')
         except ValueError:
             print(f"❌ Неверный формат даты: {date_filter}")
-            print("Используйте формат: YYYY-MM-DD (например: 2025-12-08)")
+            print("Используйте формат: YYYY-MM-DD или YYYY-MM-DD YYYY-MM-DD (например: 2026-02-16 2026-02-17)")
             return
+        if len(sys.argv) > 2:
+            date_filter_end = sys.argv[2]
+            try:
+                datetime.strptime(date_filter_end, '%Y-%m-%d')
+            except ValueError:
+                print(f"❌ Неверный формат конечной даты: {date_filter_end}")
+                return
     
     print("🔌 Подключение к базе данных...")
     conn, db_type = get_db_connection()
@@ -344,13 +358,16 @@ def main():
         print("✅ Используется локальный SQLite")
     
     if date_filter:
-        print(f"📅 Фильтр по дате: {date_filter}")
+        if date_filter_end and date_filter_end != date_filter:
+            print(f"📅 Период: {date_filter} — {date_filter_end}")
+        else:
+            print(f"📅 Фильтр по дате: {date_filter}")
     
     cursor = conn.cursor()
     
     try:
-        stats = get_funnel_stats(db_type, cursor, date_filter)
-        print_funnel(stats, date_filter)
+        stats = get_funnel_stats(db_type, cursor, date_filter, date_filter_end)
+        print_funnel(stats, date_filter, date_filter_end)
     except Exception as e:
         print(f"❌ Ошибка при получении статистики: {e}")
         import traceback

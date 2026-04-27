@@ -72,3 +72,8 @@ Button click → button_handler() → handle_natal_chart_request() → generate_
 
 Нет необходимости в дополнительных изменениях.
 
+
+
+
+
+

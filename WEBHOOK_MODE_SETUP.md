@@ -244,3 +244,8 @@ curl -X POST https://ваш-домен.com/webhook/telegram
 - ✅ Меньше нагрузки на сервер
 - ✅ Работает вместе с webhook YooKassa
 
+
+
+
+
+

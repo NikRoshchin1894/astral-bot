@@ -211,3 +211,8 @@ if __name__ == '__main__':
         username = sys.argv[1]
         sync_payments_for_user(username=username)
 
+
+
+
+
+

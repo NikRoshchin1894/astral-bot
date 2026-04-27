@@ -55,3 +55,8 @@ async def check_and_process_pending_payment(user_id: int, context_or_application
 
 Теперь функция может работать как с обычным `Context` (из обработчиков Telegram), так и с `Application` (из webhook обработки платежей), что устраняет ошибку и делает код более гибким.
 
+
+
+
+
+

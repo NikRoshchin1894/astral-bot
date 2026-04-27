@@ -280,3 +280,8 @@ curl -X POST $YOOKASSA_WEBHOOK_URL -H "Content-Type: application/json" -d '{"tes
 
 **Готово!** После настройки webhook будет автоматически обрабатывать все платежи. 🎉
 
+
+
+
+
+
