@@ -11,6 +11,5 @@ pyswisseph==2.10.3.2
 geopy==2.4.1
 reportlab==4.4.4
 pytz==2024.1
-timezonefinder==6.2.0
 Pillow==10.1.0
 psycopg2-binary==2.9.9

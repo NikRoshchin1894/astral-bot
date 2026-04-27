@@ -4711,6 +4711,110 @@ def get_coordinates_from_place(place_str: str) -> Tuple[Optional[float], Optiona
         return None, None
 
 
+def resolve_timezone_from_place(place_str: str, lat: float, lon: float, naive_local_dt: datetime):
+    """
+    Определяет таймзону без timezonefinder.
+    Стратегия:
+    1) reverse-geocode -> country_code
+    2) если у страны 1 таймзона — берём её
+    3) если несколько — выбираем ближайшую к долготе по UTC offset на дату рождения
+    """
+    place_lower = (place_str or "").lower()
+    city_overrides = {
+        "моск": "Europe/Moscow",
+        "moscow": "Europe/Moscow",
+        "питер": "Europe/Moscow",
+        "saint petersburg": "Europe/Moscow",
+        "новосибир": "Asia/Novosibirsk",
+        "екатерин": "Asia/Yekaterinburg",
+        "владивост": "Asia/Vladivostok",
+        "new york": "America/New_York",
+        "лос-анджел": "America/Los_Angeles",
+        "los angeles": "America/Los_Angeles",
+        "london": "Europe/London",
+        "лондон": "Europe/London",
+        "berlin": "Europe/Berlin",
+        "берлин": "Europe/Berlin",
+    }
+    for key, tz_name in city_overrides.items():
+        if key in place_lower:
+            tz = pytz.timezone(tz_name)
+            logger.info("Таймзона определена по городу '%s': %s", place_str, tz.zone)
+            return tz
+
+    def tz_from_longitude():
+        # 1 градус долготы ~= 4 минуты смещения UTC.
+        minutes = int(round(lon * 4))
+        tz = pytz.FixedOffset(minutes)
+        logger.info("Таймзона определена по долготе (lon=%.4f): UTC%+.2f", lon, minutes / 60.0)
+        return tz
+
+    try:
+        geolocator = Nominatim(user_agent="astral_bot")
+        location = geolocator.reverse(
+            (lat, lon),
+            exactly_one=True,
+            language="en",
+            timeout=10,
+            addressdetails=True,
+            zoom=10,
+        )
+
+        country_code = None
+        if location and location.raw:
+            address = location.raw.get("address", {}) or {}
+            country_code = (address.get("country_code") or "").upper()
+
+        if not country_code:
+            logger.warning("Не удалось определить country_code для %s, %s. Используется fallback по долготе.", lat, lon)
+            return tz_from_longitude()
+
+        country_timezones = pytz.country_timezones.get(country_code)
+        if not country_timezones:
+            logger.warning("Для country_code=%s не найдены таймзоны. Используется fallback по долготе.", country_code)
+            return tz_from_longitude()
+
+        if len(country_timezones) == 1:
+            tz = pytz.timezone(country_timezones[0])
+            logger.info("Таймзона определена по стране (%s): %s", country_code, tz.zone)
+            return tz
+
+        target_offset = int(round(lon / 15.0))
+        best_tz_name = None
+        best_score = float("inf")
+
+        for tz_name in country_timezones:
+            try:
+                tz = pytz.timezone(tz_name)
+                try:
+                    local_dt = tz.localize(naive_local_dt, is_dst=None)
+                except Exception:
+                    local_dt = tz.localize(naive_local_dt, is_dst=False)
+                offset_hours = local_dt.utcoffset().total_seconds() / 3600.0
+                score = abs(offset_hours - target_offset)
+                if score < best_score:
+                    best_score = score
+                    best_tz_name = tz_name
+            except Exception:
+                continue
+
+        if best_tz_name:
+            tz = pytz.timezone(best_tz_name)
+            logger.info(
+                "Таймзона определена по стране/долготе (%s, lon=%.4f): %s",
+                country_code,
+                lon,
+                tz.zone,
+            )
+            return tz
+
+        logger.warning("Не удалось выбрать таймзону из списка страны %s. Используется fallback по долготе.", country_code)
+        return tz_from_longitude()
+    except Exception as err:
+        logger.warning("Ошибка определения таймзоны для '%s': %s. Используется fallback по долготе.", place_str, err)
+        return tz_from_longitude()
+
+
 def calculate_natal_chart(birth_data: dict) -> dict:
     """
     Расчет натальной карты через Swiss Ephemeris.
@@ -4758,17 +4862,13 @@ def calculate_natal_chart(birth_data: dict) -> dict:
         
         logger.info(f"Координаты места рождения: широта={lat}, долгота={lon}")
         
-        # Важно: timezonefinder может падать с segfault на некоторых сборках macOS/Python.
-        # Чтобы бот стабильно запускался и обрабатывал кнопки, используем безопасный fallback UTC.
-        tz = pytz.UTC
-        logger.info(
-            "Часовой пояс для координат %s, %s: используется UTC (без timezonefinder)",
-            lat,
-            lon,
-        )
+        # Определение таймзоны без timezonefinder (через geopy + pytz)
+        naive_local_dt = datetime(year, month, day, hour, minute)
+        tz = resolve_timezone_from_place(place_str, lat, lon, naive_local_dt)
+        logger.info("Часовой пояс места рождения: %s", getattr(tz, "zone", str(tz)))
         
         # Создание datetime объекта в локальном времени места рождения
-        local_dt = tz.localize(datetime(year, month, day, hour, minute))
+        local_dt = tz.localize(naive_local_dt)
         
         # Конвертация в UTC (Swiss Ephemeris работает с UTC)
         utc_dt = local_dt.astimezone(pytz.UTC)
